@@ -396,7 +396,12 @@ test('a refused append is reported, and the device does not believe it reported'
 
   const beat = await a.beat()
   assert.equal(beat.wrote, false, 'nothing was written')
-  assert.equal(beat.seq, null, 'and no sequence number is claimed')
+  // strictEqual, not equal: the kernel's `loose-equality.test.js` scans this
+  // tree and refuses `assert.equal(x, null)`, because `==` accepts undefined too
+  // — so a `seq` field that silently stopped being set would pass. Here that is
+  // exactly the distinction worth keeping: `null` is the declared answer for "no
+  // entry was written", and `undefined` would mean the field went missing.
+  assert.strictEqual(beat.seq, null, 'and no sequence number is claimed')
 
   const f = a.faults()
   assert.ok(f.some((x) => x.code === 'append-refused'), 'the refusal is in the report')
@@ -478,7 +483,7 @@ test('an unchanged census is not appended twice, so a healthy feed stops growing
 
   const second = await a.beat()
   assert.equal(second.wrote, false, 'the second is suppressed')
-  assert.equal(second.seq, null, 'and claims no sequence number')
+  assert.strictEqual(second.seq, null, 'and claims no sequence number')
   assert.equal(log.length, 1, 'the feed did not grow')
 
   // Still reports the numbers, because a caller asking "how am I" on a
