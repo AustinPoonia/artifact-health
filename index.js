@@ -94,9 +94,24 @@
  * journal holds free text, so a port onto it would hand an artifact strings the
  * device's owner did not write, and this file's whole redaction argument
  * (`lib/codes.js`) says why that must not be forwarded to a feed. So it is a
- * kernel change with a design question inside it, it is registered as a ceiling
- * below rather than half-built here, and until it exists the honest report is
- * three names in `limits()`.
+ * kernel change with a design question inside it rather than something to
+ * half-build here, and until it exists the honest report is three names in
+ * `limits()`.
+ *
+ * `ponytail:` **three of the four things §6b asks for are not observed, and this is
+ * the ceiling that says so in one place.** The upgrade path is the read-only
+ * `platform:diagnostics@1` above — a port onto the kernel's existing `Journal`,
+ * scoped in `chain.js`'s `NATIVE` table — and the design question that comes with it
+ * is that the journal holds free text, so the port would hand an artifact strings the
+ * device's owner did not write and `lib/codes.js` forbids forwarding those to a feed.
+ * A first cut that resolves both: the port answers *counts per `kind`* rather than
+ * entries, which is a shape this artifact could publish under its existing vocabulary
+ * without carrying one character of the journal's text. The trigger is the first fleet
+ * deployment where a refusal or a fetch failure had to be diagnosed by someone walking
+ * to a machine. Not registered in `ROADMAP.md`'s debt ledger, and that is the scope
+ * rule rather than an omission: the ledger covers the kernel, `artifact-net`,
+ * `artifact-protocol` and the `platform-*` repos, and for an `artifact-*` repo the
+ * comments are the register.
  *
  * ## Why this is not a side channel, decided rather than hoped
  *
