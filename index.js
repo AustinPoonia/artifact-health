@@ -10,11 +10,18 @@
  *
  * ## The four things §6b names, and which of them exist from inside a realm
  *
- * §6b asks for "replication health, refusals, fetch failures and zone deaths". One
- * of those four is fully reachable, one is reachable in a single degenerate form,
- * and two are not reachable at all. That is not a shortfall in this file; it is a
- * fact about the port surface, and `limits()` returns it as data so that no
- * dashboard bound to this contract ever shows a zero nobody measured.
+ * §6b asks for "replication health, refusals, fetch failures and zone deaths". When this
+ * artifact was first written one of the four was fully reachable, one was reachable in a
+ * single degenerate form, and two were not reachable at all. **`platform:diagnostics` has
+ * since landed and moved exactly one of them**, which is fewer than §6b predicted and is
+ * the honest count; the sections below say which, and the two that did not move are still
+ * in `limits()` with reasons that had to be *rewritten* rather than merely kept. That is
+ * the thing the original design did not anticipate: a port can make a category reachable
+ * while leaving the sentence about a neighbouring category wrong in a new way.
+ *
+ * None of this is a shortfall in this file; it is a fact about the port surface, and
+ * `limits()` returns it as data so that no dashboard bound to this contract ever shows a
+ * zero nobody measured.
  *
  * **1. Replication health — reachable, and genuinely.** `platform:feed`'s own
  * declaration is what makes it so: `entries()` "merges the feeds of the members
@@ -38,18 +45,32 @@
  * is fully visible. Total failure shows up as silence, which is a weaker signal
  * than a number and is still a signal.
  *
- * **2. Refusals — not reachable, and structurally so.** `Assembly.refusals`,
- * `device.networks[].refused` and `device.update.fellBack` are the kernel's
- * surfaces and no `platform:*` declaration exposes any of them;
- * `platform:network-view` answers members, groups and permission grants out of
- * folded signed state and says nothing about what was refused. But the missing
- * port is the smaller half of the argument. **A refusal is by definition the thing
- * that stopped an artifact from being built, so the artifact that would report it
- * is the one that may not exist** — and in the worst case the refused artifact is
- * this one. A monitor cannot be the reporter of the event that prevents monitors
- * from running. `journal.js`'s own header makes the same point one level up about
- * a failed `boot()`: "every one of those surfaces evaporates", which is why the
- * journal is an object the *caller* owns.
+ * **2. Refusals — still partial, and the reason changed rather than went away.** The
+ * original reason was that no `platform:*` declaration exposed the kernel's refusal
+ * surfaces at all. Half of that is now false and half is sharper than before.
+ *
+ * False half: `platform:diagnostics` does reach them. `boot.js` copies every
+ * `Assembly.refusals` entry, every undeliverable instance, every unreachable network and
+ * every not-yet-admitted network into the journal. So the events are in the ring and the
+ * port counts them.
+ *
+ * Sharper half: **they are counted under `network`, together with things that are not
+ * refusals at all** — a moved platform pin, a replication settle that expired, a network
+ * that resolved to no key. The kernel picked those six kind names for a person reading
+ * `artifact run`'s output, and finer counting would be a change to the kind each
+ * `journal.note` call site passes, which is the kernel's own vocabulary and is not this
+ * port's to redefine. So `diagnostics().kinds` carries a `network` count and this artifact
+ * refuses to render it as a refusal count. Reporting it as one would be precisely the
+ * failure this whole file is arranged against: a number under a heading nobody measured.
+ *
+ * And the deeper objection is untouched by any port. **A refusal is by definition the
+ * thing that stopped an artifact from being built, so the artifact that would report it is
+ * the one that may not exist** — in the worst case the refused artifact is this one. A
+ * monitor cannot be the reporter of the event that prevents monitors from running.
+ * `journal.js`'s own header makes the same point one level up about a failed `boot()`:
+ * "every one of those surfaces evaporates", which is why the journal is an object the
+ * *caller* owns — and why a count read *after* a successful boot can never include the
+ * boot that did not happen.
  *
  * What this artifact does report is refusals **of its own calls** — a store that
  * refuses a write, an append that is refused — and it labels them first-person
@@ -57,12 +78,23 @@
  * value; a fault count that mixed "my store is full" with "this device refused an
  * artifact at boot" would be a number with two meanings.
  *
- * **3. Fetch failures — not reachable in the sense §6b means.** The failure §6b
- * has in mind is `bootNetwork`'s `source.fetch` throwing `Unavailable` — a release
- * that could not be found — and `journal.js` exists partly to record which
- * artifact a fetch last failed on. That happens before any artifact code runs, on
- * the path where `boot()` throws and takes every surface with it. Unreachable for
- * the same structural reason as refusals.
+ * **3. Fetch failures — still none, and the port makes the reason *worse* rather than
+ * better.** The failure §6b has in mind is `bootNetwork`'s `source.fetch` throwing
+ * `Unavailable` — a release that could not be found — and `journal.js` exists partly to
+ * record which artifact a fetch last failed on. It does record it. Nobody in a realm is
+ * left to read it: `source.fetch` has exactly one call site in the kernel, it is inside
+ * `bootNetwork`, and the throw is not caught there — it unwinds through `boot`'s teardown
+ * and takes the whole device with it. So the note is written to a ring that dies four
+ * lines later.
+ *
+ * What makes this the row to be most careful about is what the `fetch` count *does*
+ * contain on a device that is running. Two of `source.js`'s three journal notes are on the
+ * **success** path: a release refused as a rollback below the anti-rollback floor, and a
+ * release that came from a member rather than from its author. So a live device's `fetch`
+ * count is, in practice, a count of fetches that worked — and the first of those is a
+ * defence engaging. A dashboard rendering it as "fetch failures" would report a security
+ * control doing its job as a fault. That is why the row stays in `limits()` at `none`
+ * rather than being softened to `partial` on the strength of a non-zero number.
  *
  * `platform:blobs` would surface a *content* fetch failure — `get()` answering
  * null means no member is holding the bytes — and that port is deliberately **not
@@ -72,46 +104,55 @@
  * empty category is how a monitor comes to look more capable than it is, so the
  * port is absent and `limits()` says why.
  *
- * **4. Zone deaths — not reachable, with one degenerate exception that is worth
- * having.** `Zones.deaths` is an instance whose thread died after `build`, and
- * `journal.js` records that nothing in `lib/` has ever subscribed: "a zone death
- * is invisible on every surface this device has". There is no port for it, and
- * again the structure is the deeper objection — an observer of a death must
- * outlive it, which is the kernel and not a peer artifact in another zone. If
- * *this* artifact's zone dies it cannot report its own death.
+ * **4. Zone deaths — reachable, and this is the one §6b's port actually closes.** It is
+ * also the one where this file's original text was wrong about the kernel, which is worth
+ * stating plainly rather than quietly editing. The claim was that "nothing in `lib/` has
+ * ever subscribed" to `Zones.deaths`, quoting `journal.js`'s header — and `journal.js`'s
+ * header is describing the state of affairs *the journal was written to fix*. `boot.js`
+ * does subscribe, in one line, and it has since the journal existed: every death becomes a
+ * note of kind `zone`. That kind has exactly one writer, so `diagnostics().kinds`'s `zone`
+ * count is the zone-death count, with no conflation to warn about — the only row of the
+ * seven for which that is true.
  *
- * The exception: a device whose health zone died stops beating, so the fleet sees
- * it go silent at the beat interval. That is exactly one zone's death — this one's
- * — observed from outside, by absence, indistinguishable from the machine being
- * off. It is reported as `partial` rather than as coverage, because calling it
- * coverage would be the dishonesty this whole header is arranged against.
+ * The structural objection survives in a much narrower form and is why the `zone deaths`
+ * row leaves `limits()` rather than staying at `partial`: an observer of a death must
+ * outlive it, and this artifact outlives every zone but its own. A device whose *health*
+ * zone died stops beating and goes silent to the fleet, which is `total partition`'s row
+ * and not a separate blind spot.
  *
- * **The kernel change that would close 2, 3 and 4** is one port, and it is not
- * this artifact's to build: a `platform:diagnostics@1` that reads back the
- * kernel's own `Journal` — which already exists, is already bounded, and already
- * redacts. It would be read-only, it would need scoping in `chain.js`'s `NATIVE`
- * table, and it carries a real risk this artifact deliberately does not: the
- * journal holds free text, so a port onto it would hand an artifact strings the
- * device's owner did not write, and this file's whole redaction argument
- * (`lib/codes.js`) says why that must not be forwarded to a feed. So it is a
- * kernel change with a design question inside it rather than something to
- * half-build here, and until it exists the honest report is three names in
- * `limits()`.
+ * Two qualifications belong with the number rather than in a footnote, and both are in the
+ * declaration a caller reads. `zone: 0` on a device with containment switched off means
+ * there are no zones rather than no deaths — §4b records that resource isolation is off by
+ * default — and the count is device-wide, so a death in another network this device has
+ * joined is in it. Neither is a reason to withhold the number; both are reasons it travels
+ * with `observed` and with the scope sentence.
  *
- * `ponytail:` **three of the four things §6b asks for are not observed, and this is
- * the ceiling that says so in one place.** The upgrade path is the read-only
- * `platform:diagnostics@1` above — a port onto the kernel's existing `Journal`,
- * scoped in `chain.js`'s `NATIVE` table — and the design question that comes with it
- * is that the journal holds free text, so the port would hand an artifact strings the
- * device's owner did not write and `lib/codes.js` forbids forwarding those to a feed.
- * A first cut that resolves both: the port answers *counts per `kind`* rather than
- * entries, which is a shape this artifact could publish under its existing vocabulary
- * without carrying one character of the journal's text. The trigger is the first fleet
- * deployment where a refusal or a fetch failure had to be diagnosed by someone walking
- * to a machine. Not registered in `ROADMAP.md`'s debt ledger, and that is the scope
- * rule rather than an omission: the ledger covers the kernel, `artifact-net`,
- * `artifact-protocol` and the `platform-*` repos, and for an `artifact-*` repo the
- * comments are the register.
+ * **The kernel change §6b said would close 2, 3 and 4 closed one of them**, and the
+ * arithmetic is worth keeping because it is the kind of prediction a roadmap gets wrong
+ * cheaply. The port is `platform:diagnostics@1`, it is read-only, it answers counts per
+ * kind, and it carries none of the journal's free text — every design constraint §6b named
+ * held. What §6b did not check is whether a *kind* is a *category*. It is not: the kernel's
+ * six kinds were chosen for a terminal, so the port can answer zone deaths exactly, can
+ * answer refusals only mixed with four other things, and cannot answer fetch failures at
+ * all because the failure kills the reader. A port onto a journal cannot expose what the
+ * journal does not separate, and it cannot expose to a realm what the process died before
+ * reaching.
+ *
+ * `ponytail:` **two of the four things §6b asks for are still not observed, and this is
+ * the ceiling that says so in one place.** It was three, and `platform:diagnostics` closed
+ * zone deaths. What is left is not a missing port: it is that `journal.js`'s `kind` is one
+ * name for several categories (a refusal and a moved pin are both `network`; a rollback
+ * refused and a release that could not be found are both `fetch`) and that a fetch failure
+ * tears down the process before any artifact could read the ring. The upgrade path is
+ * therefore a **kernel** change and not an artifact one: a finer vocabulary at the
+ * `journal.note` call sites, which is `boot.js`'s and `source.js`'s to decide because it is
+ * also what a person reads out of `artifact run`, followed by a second version of
+ * `platform:diagnostics` naming the new kinds and a second version of this contract
+ * reporting them. The trigger is the first fleet deployment where a refusal had to be
+ * separated from a pin move by someone walking to a machine. Not registered in
+ * `ROADMAP.md`'s debt ledger, and that is the scope rule rather than an omission: the
+ * ledger covers the kernel, `artifact-net`, `artifact-protocol` and the `platform-*` repos,
+ * and for an `artifact-*` repo the comments are the register.
  *
  * ## Why this is not a side channel, decided rather than hoped
  *
@@ -157,6 +198,21 @@
  *      on disk. A monitor that appeared wherever it was installed would be a
  *      device deciding to report on itself, and that decision is the network's.
  *
+ * **The one port whose binding is a disclosure, said here rather than buried.**
+ * `platform:diagnostics` is device-wide: one journal per process, shared by every network
+ * this device has joined, and the platform contract states that scoping is unavailable
+ * rather than declined. So this artifact, bound to it, can see *how many* diagnostic events
+ * of each kind occurred on this device including ones belonging to another network and to
+ * artifacts it cannot otherwise reach. It cannot see which, whose, when, or in what words.
+ *
+ * Three things keep that from widening. The binding is signed — an admin names the port in
+ * a graph, and this kind is `instances: "explicit"`, so nothing acquires it by being on
+ * disk. Nothing read through it is ever put into a **beat**: a beat replicates to one
+ * network's members, and exporting a device-wide count into one network's log would hand
+ * that network's members another network's event volume. And the counts leave this artifact
+ * only through `diagnostics()`, whose own `observed` field forces a caller to distinguish
+ * "not measured" from "zero".
+ *
  * The residual, because there is one. The fault counters are per-instance state,
  * and two consumers share them: consumer A can make `store-refused` appear by
  * filling the store, and consumer B can see the count. That is a low-bandwidth
@@ -194,6 +250,40 @@
 const shape = require('./lib/shape')
 const { CODES, classify, safe } = require('./lib/codes')
 
+/**
+ * What a kind name may look like, checked by **shape** and deliberately not against a
+ * list.
+ *
+ * `platform:diagnostics` projects the kernel's journal onto its own frozen seven-name
+ * vocabulary and buckets everything else, and its return object is closed, so
+ * `contract.validate` refuses an undeclared key on the way past. That is the guarantee,
+ * it is the port's, and it is proved in that repo's conformance suite. This is the
+ * layer that stops this artifact making it *worse*, and it takes the one form that does
+ * not create a second problem:
+ *
+ *   - **Not a copy of the vocabulary.** A list in here would go stale against the
+ *     kernel's, and the failure would be a kind from a newer runtime rendering as
+ *     nothing at all — invisible, which is the one outcome this whole artifact is
+ *     arranged against. So a name this release has never seen is reported.
+ *   - **A shape, so what cannot be a kind cannot cross.** Lowercase, hyphens and
+ *     digits, thirty-two characters. Every form `lib/codes.js` names — 128 hex
+ *     characters, a `Bearer …` header, base64 with `+` and `/` — fails it, and so does
+ *     anything long enough to be a payload. That is strictly stronger than `safe()`
+ *     here, which is why a kind name does not go through it: `safe` bounds length and
+ *     catches key-shaped runs, and this bounds length *and* alphabet.
+ *
+ * **The limit, in the same breath, because it is the honest half.** A short lowercase
+ * word is indistinguishable from a kind name — `hunter2` passes this, and would if the
+ * port ever handed one over. Nothing in an artifact can tell those apart, and nothing
+ * needs to: the port is the layer that guarantees the seven names, and the reason it can
+ * is that its answer is a closed object the kernel validates. This is the second line,
+ * and `journal.js`'s rule about a second line never being the first applies unchanged.
+ */
+const KIND = /^[a-z][a-z0-9-]{0,31}$/
+
+/** Where a name that cannot be a kind is counted. One row, however many arrive. */
+const UNNAMED = 'unnamed'
+
 module.exports = {
   /**
    * @param {Record<string, any>} deps    one entry per bound port, and nothing else
@@ -203,6 +293,25 @@ module.exports = {
     for (const required of ['feed', 'store', 'roster']) {
       if (!deps[required]) throw new Error(`health requires the ${required} capability`)
     }
+
+    /**
+     * The one port whose absence is survivable, so it is checked for rather than
+     * demanded.
+     *
+     * `platform:diagnostics` is declared at cardinality `optional` and this is the
+     * matching half of that decision. Refusing to build without it would make the
+     * artifact unrunnable on any device whose kernel predates the capability, to buy a
+     * number that `limits()` is perfectly able to report the absence of — which is the
+     * whole shape of this artifact's argument applied to its own dependencies.
+     *
+     * `plan.js` binds every platform port a manifest declares, unconditionally, so on a
+     * device running a kernel that has the capability this is always present and the
+     * unbound branch is reached by an embedder calling `build` directly, by a suite, or
+     * by a future kernel that dropped the row from `chain.NATIVE`. That is worth saying
+     * plainly rather than implying the branch is a deployment case: it is a correctness
+     * case, and `test/artifact.test.js` drives both sides of it.
+     */
+    const ring = deps.diagnostics ?? null
 
     /**
      * The key the last census digest is written under.
@@ -632,6 +741,89 @@ module.exports = {
       },
 
       /**
+       * What the kernel wrote in this device's own diagnostic ring, by kind.
+       *
+       * The only operation here that reads something which is **not** about this
+       * network, which is why it is its own call rather than a field on `local()`. A
+       * record half of whose numbers are scoped to the caller's network and half of
+       * which are device-wide, with nothing in the shape saying which, is the
+       * unqualified number this artifact exists to refuse.
+       *
+       * `observed` is the field that carries the whole point. An unbound port answers
+       * `false` and an **empty** list — never seven zeroes — because zero and
+       * unmeasured read identically and mean different things, and this is the artifact
+       * whose entire argument is that difference. A refused port answers `false` too
+       * *and* records `diagnostics-unreachable`, which is how a caller tells "this
+       * network did not grant the port" from "the kernel is failing": the first sends an
+       * operator to an admin, the second to a machine.
+       *
+       * The counts are passed through rather than interpreted. This artifact does not
+       * rename `network` to "refusals", does not sum anything, and does not drop a kind
+       * it does not recognise — a vocabulary entry from a newer kernel arrives as a row
+       * with a name this release has never seen, which is visible, whereas a filter
+       * against a list in here would make it invisible. The platform contract has
+       * already guaranteed the only thing that matters about those names: they come from
+       * a closed set, and an entry the kernel wrote under some other kind is counted as
+       * `other` by the port, so no journal text can reach this field by any path.
+       *
+       * `nothing()` rather than a literal in three places, because "not observed" has to
+       * be one shape: a caller comparing two devices must not find one answering
+       * `kinds: []` and another `kinds: null`.
+       */
+      async diagnostics () {
+        /** The one shape "not observed" takes. */
+        const nothing = () => ({ observed: false, dropped: 0, kinds: /** @type {any[]} */ ([]) })
+
+        if (ring === null) return nothing()
+
+        // `attempt` and not a bare call, for the reason it exists: a monitor whose read
+        // throws is a monitor that reports nothing on exactly the call where something
+        // was wrong. The fallback is the unobserved shape, so a refused port degrades to
+        // "nobody measured" — which is true — rather than to zeroes.
+        const answer = await attempt(
+          () => ring.counts(), 'diagnostics-unreachable', /** @type {any} */ (null)
+        )
+        if (!answer || typeof answer !== 'object' || !answer.kinds || typeof answer.kinds !== 'object') {
+          // A port that answered something this release cannot read is not a port that
+          // answered. Counted through `attempt` above only when it threw, so this branch
+          // records nothing: a malformed answer from a newer or older kernel is not this
+          // device failing, and calling it a fault would put a version skew under a
+          // heading that says the kernel is broken.
+          return nothing()
+        }
+
+        /**
+         * Counts by kind name, with names checked for *shape* and never against a copy
+         * of the vocabulary.
+         *
+         * A `Map`, because two names can collapse onto one row: anything that is not
+         * shaped like a kind is counted under `unnamed`, and there can be more than one
+         * of those.
+         *
+         * @type {Map<string, number>}
+         */
+        const byKind = new Map()
+        for (const [kind, count] of Object.entries(answer.kinds)) {
+          const n = Number(count)
+          const name = KIND.test(kind) ? kind : UNNAMED
+          // Defensive across a port boundary, exactly as `roster()` is: the contract
+          // declares these as numbers, and a monitor that threw on a malformed row would
+          // be a monitor that stopped monitoring. A negative count is floored rather
+          // than passed on, because a count of events cannot be below none.
+          byKind.set(name, (byKind.get(name) ?? 0) + (Number.isFinite(n) && n >= 0 ? n : 0))
+        }
+
+        const kinds = [...byKind.entries()].map(([kind, count]) => ({ kind, count }))
+
+        const dropped = Number(answer.dropped)
+        return {
+          observed: true,
+          dropped: Number.isFinite(dropped) && dropped >= 0 ? dropped : 0,
+          kinds
+        }
+      },
+
+      /**
        * What this artifact cannot observe.
        *
        * Returned by a call rather than written in a README, because a caller can
@@ -639,45 +831,103 @@ module.exports = {
        * The header has the full argument for each row; these sentences are what an
        * operator needs at the moment they are looking at a dashboard.
        *
-       * Static today. It is a method rather than a constant so that the day a
-       * `platform:diagnostics` port exists, a row can be dropped when the port is
-       * bound and kept when it is not — which is the same shape `capabilities()`
-       * has in `artifact-send` and the reason this is not a frozen literal.
+       * **It is a method rather than a constant so that a row can be dropped the day a
+       * `platform:diagnostics` port is bound, and that day has come.** This is the whole
+       * of the return on that decision, so it is worth being exact about what moved:
+       *
+       *   - `zone deaths` is **gone**, and only when the port is bound. `boot.js` notes
+       *     every death under kind `zone`, that kind has exactly one writer, so the count
+       *     is the zone-death count. `diagnostics()` carries it.
+       *   - `refusals` **stays**, with a rewritten reason. The old one said no capability
+       *     exposes them; one now does, and the count it exposes bundles refusals with
+       *     pin moves, expired settles and unresolved invites under `network`. A reason
+       *     that went stale in the direction of *understating* the coverage would be the
+       *     less dangerous half; this one had to change because a reader would otherwise
+       *     conclude no number exists, go looking, find `network`, and use it.
+       *   - `fetch failures` **stays** at `none`, with a reason that got sharper. There is
+       *     one `source.fetch` call site, its throw is not caught in `bootNetwork`, and it
+       *     takes the device down — so the note is written and nobody in a realm is left.
+       *     Worse, the `fetch` count a live device *does* show is mostly successes, one of
+       *     which is the anti-rollback floor engaging. That has to be said here, because
+       *     the honest failure is a dashboard reading a defence as a fault.
+       *   - `total partition` **stays** unchanged. No port touches it.
+       *   - one row is **new**, and it is the cost of the port rather than a pre-existing
+       *     gap: nothing `diagnostics()` reports reaches the fleet, deliberately, because
+       *     the counts are device-wide and a beat replicates inside one network.
+       *
+       * Rows a device cannot answer are not silently absent: the two above that stay are
+       * the same rows whether or not the port is bound, and the unbound case restores the
+       * `zone deaths` row and drops the fleet row, because on that device the fleet row
+       * would be describing a number nobody has.
+       *
+       * The shape is `artifact-send`'s `capabilities()` one level up: a call whose answer
+       * depends on what this instance was actually wired to, so a caller learns it from
+       * the binding rather than from a README that cannot know.
        */
       limits () {
-        return [
+        const rows = [
           {
             subject: 'refusals',
             observed: 'partial',
-            because:
-              'no platform capability exposes the assembly\'s refusals, and a refusal is what stopped an ' +
-              'artifact from being built — so the artifact that would report it may be the one that was refused',
-            covered: 'the device\'s own journal, and the refusal surfaces on the assembly it evaporated with'
+            because: ring === null
+              ? 'no platform capability is bound here that exposes the assembly\'s refusals, and a refusal is ' +
+                'what stopped an artifact from being built — so the artifact that would report it may be the ' +
+                'one that was refused'
+              : 'the kernel counts a refusal under the same kind as a moved platform pin, an expired ' +
+                'replication wait and an unresolved invite, so the network count is not a refusal count; and a ' +
+                'refusal is what stopped an artifact from being built, so the artifact that would report it ' +
+                'may be the one that was refused',
+            covered: ring === null
+              ? 'the device\'s own journal, and the refusal surfaces on the assembly it evaporated with'
+              : 'the network count in diagnostics(), which includes them and is not only them, and the ' +
+                'device\'s own journal for whoever is standing at the machine'
           },
           {
             subject: 'fetch failures',
             observed: 'none',
-            because:
-              'a release that cannot be fetched fails during boot, before any artifact runs, on the path where ' +
-              'the whole device is torn down',
+            because: ring === null
+              ? 'a release that cannot be fetched fails during boot, before any artifact runs, on the path ' +
+                'where the whole device is torn down'
+              : 'a release that cannot be fetched throws out of the one call site that fetches, uncaught, and ' +
+                'tears the device down before any artifact runs — so it is written to a ring nobody is left ' +
+                'to read; the fetch count a running device shows is fetches that succeeded and were worth ' +
+                'noting, one of which is a rollback being refused',
             covered: 'the device\'s own journal, for whoever is standing at the machine'
-          },
-          {
+          }
+        ]
+
+        if (ring === null) {
+          rows.push({
             subject: 'zone deaths',
             observed: 'partial',
             because:
-              'nothing exposes a dead zone to a peer artifact, and an observer of a death has to outlive it — ' +
-              'this instance cannot report its own',
+              'no platform capability is bound here that exposes a dead zone to a peer artifact, and an ' +
+              'observer of a death has to outlive it — this instance cannot report its own',
             covered: 'this device going silent in fleet(), which is indistinguishable from it being switched off'
-          },
-          {
-            subject: 'total partition',
+          })
+        }
+
+        rows.push({
+          subject: 'total partition',
+          observed: 'none',
+          because:
+            'a member that reaches nobody reports to nobody; the report and the failure travel on the same wire',
+          covered: 'that member appearing in fleet().silent, which a switched-off machine also does'
+        })
+
+        if (ring !== null) {
+          rows.push({
+            subject: 'this device\'s diagnostics, to the fleet',
             observed: 'none',
             because:
-              'a member that reaches nobody reports to nobody; the report and the failure travel on the same wire',
-            covered: 'that member appearing in fleet().silent, which a switched-off machine also does'
-          }
-        ]
+              'the kernel\'s ring is device-wide across every network this device has joined, and a beat ' +
+              'replicates to one network\'s members — so putting these counts into a beat would hand one ' +
+              'network\'s members another network\'s event volume, and they are deliberately kept local',
+            covered: 'diagnostics() on the device itself, for a shell or an operator in front of it'
+          })
+        }
+
+        return rows
       },
 
       /**
@@ -693,7 +943,7 @@ module.exports = {
        * about an absence, and it is the part of the panel a reader must not skim.
        */
       async view () {
-        const [l, f] = await Promise.all([this.local(), this.fleet()])
+        const [l, f, d] = await Promise.all([this.local(), this.fleet(), this.diagnostics()])
 
         /** @type {any[]} */
         const nodes = [
@@ -736,6 +986,46 @@ module.exports = {
               },
               { type: 'code', text: m.device }
             ])
+          })
+        }
+
+        // Only when the port answered. A panel that drew "This device's journal" with
+        // seven zeroes on a device that never bound the port would be the exact reading
+        // `limits()` exists to prevent, printed by the one surface an operator reads —
+        // and the row would sit two nodes above a `limits()` line saying the opposite.
+        // Absent, `limits()` still carries the `zone deaths` row, so nothing goes
+        // unreported; it goes reported as unobserved, which is the honest form.
+        if (d.observed) {
+          nodes.push({
+            type: 'rows',
+            // Named for the substrate rather than for what an operator hopes it means.
+            // "Faults on this device" is the heading two nodes down and it is
+            // first-person about this instance's own calls; this is the kernel's account
+            // of the whole device, and giving the two similar headings would merge two
+            // numbers with different scopes in a reader's head.
+            label: 'This device\'s journal, by kind',
+            children: [
+              // Kinds first, in the order the port answered them, with no renaming and no
+              // arithmetic. A `field` and not a `text`: these are label/value pairs and
+              // the value is a short integer, so nothing here can clip.
+              ...d.kinds.map((k) => ({ type: 'field', label: k.kind, value: String(k.count) })),
+              // Last, and unconditional, because it is what qualifies every line above
+              // it. Above zero the counts are lower bounds and a reader has to know
+              // before reading them, which is why it is in the same block rather than in
+              // `limits()`.
+              { type: 'field', label: 'dropped by the bound', value: String(d.dropped) }
+            ]
+          })
+          nodes.push({
+            // The one sentence a reader needs that no count can carry, in the tone the
+            // vocabulary reserves for content about an absence. Two claims, both of which
+            // an operator would otherwise get wrong: `network` is not refusals, and this
+            // is the whole device rather than this network.
+            type: 'text',
+            text: 'These are the whole device\'s counts, across every network it has joined. ' +
+              'zone is exactly the number of instances whose thread died; network includes ' +
+              'refusals alongside pin moves and admissions and is not a count of refusals.',
+            tone: 'warning'
           })
         }
 

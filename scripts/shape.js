@@ -28,13 +28,20 @@ const shape = require('../lib/shape')
 const file = path.join(__dirname, '..', 'manifest.json')
 const manifest = JSON.parse(fs.readFileSync(file, 'utf8'))
 
-const declared = manifest.contracts.find(
-  (/** @type {any} */ c) => c.id === 'health' && c.version === '1.0.0'
-)
-if (!declared) throw new Error('manifest.json no longer declares health@1.0.0')
+// The version is read off the manifest rather than written here, and that is a
+// correction rather than a convenience. It was the literal `'1.0.0'`, and ROADMAP §6b's
+// `platform:diagnostics` took this contract to `1.1.0` — so a script whose whole job is
+// to keep two copies of one document in step would have stopped finding the document it
+// writes into, on the commit that needed it most. The manifest declares one `health`
+// contract; the version is whatever that entry says.
+const health = manifest.contracts.filter((/** @type {any} */ c) => c.id === 'health')
+if (health.length !== 1) {
+  throw new Error(`manifest.json declares ${health.length} health contracts; this script writes into exactly one`)
+}
+const declared = health[0]
 
 // Two spaces and a trailing newline, matching the file as it is checked in.
 declared.shape = shape
 fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + '\n')
 
-console.log(`wrote health@1.0.0's shape (${shape.operations.length} operations) into manifest.json`)
+console.log(`wrote health@${declared.version}'s shape (${shape.operations.length} operations) into manifest.json`)

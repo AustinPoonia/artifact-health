@@ -58,7 +58,7 @@ const SECRETS = {
 /**
  * A device whose ports fail while carrying a secret, and the log it wrote.
  *
- * @param {{ storePut?: boolean, storeGet?: boolean, append?: boolean, entries?: boolean, roster?: boolean }} breaks
+ * @param {{ storePut?: boolean, storeGet?: boolean, append?: boolean, entries?: boolean, roster?: boolean, diagnostics?: 'poisoned' | 'refusing' }} breaks
  */
 function leaky (breaks = {}) {
   /** @type {any[]} */
@@ -116,7 +116,58 @@ function leaky (breaks = {}) {
     whoami: async () => ({ device: 'dev-a', member: true, user: `user-${SECRETS.shortSecret}` })
   }
 
-  return { instance: health.build({ feed, store, roster }), log, kv }
+  /**
+   * A `platform:diagnostics` port behaving worse than the real one is able to.
+   *
+   * The real port projects onto a closed vocabulary and answers a closed object, so a
+   * journal string cannot become a key in its answer and `contract.validate` would
+   * refuse one if it did — `platform-diagnostics/test/conformance.test.js` is where that
+   * is proved. This fixture supplies the answer anyway, with secrets in the *kind names*
+   * and in the values, because the substrate on the other side of that port is a ring of
+   * sentences written by authors this device's owner did not choose, and this artifact
+   * must not be the only thing standing between them and a feed.
+   *
+   * `SECRETS.shortSecret` is deliberately **not** one of the poisoned kind names, and
+   * that absence is a finding rather than an oversight. `hunter2` is shaped exactly like
+   * a kind — lowercase, short — so no check an artifact can perform distinguishes it from
+   * a name a newer kernel invented, and the only honest guarantee is the port's closed
+   * vocabulary. Putting it here and asserting it never appears would be asserting a
+   * property this layer does not have; `index.js`'s `KIND` states the limit in the same
+   * breath as the guard.
+   *
+   * `refusing` is the other half: a port whose error carries the secret, which is the
+   * accident `journal.js` names as having actually happened in this tree.
+   */
+  const diagnostics = breaks.diagnostics === 'refusing'
+    ? { counts: () => boom('counts') }
+    : {
+        counts: () => ({
+          kinds: {
+            fetch: 0,
+            network: 1,
+            platform: 0,
+            zone: 2,
+            discovery: 0,
+            command: 0,
+            other: 0,
+            [`leaked-${SECRETS.keyMaterial}`]: 3,
+            [SECRETS.bearer]: 4,
+            [SECRETS.base64ish]: 6
+          },
+          dropped: 0
+        })
+      }
+
+  return {
+    instance: health.build({
+      feed,
+      store,
+      roster,
+      diagnostics: breaks.diagnostics === undefined ? undefined : diagnostics
+    }),
+    log,
+    kv
+  }
 }
 
 /** Every secret, checked against one blob of text. @param {string} text @param {string} where */
@@ -246,6 +297,94 @@ test('the census digest in the store is counts and codes, with nowhere for a str
   const value = String([...kv.values()][0])
   assert.ok(/^[0-9]+\/[0-9]+\/[a-z:,0-9-]*$/.test(value),
     `the digest matches counts and codes only, got ${JSON.stringify(value)}`)
+})
+
+/* ──── the journal's free text, which is the one substrate this feed must not meet ──── */
+
+test('nothing a diagnostics port answers reaches the feed, however it is shaped', async () => {
+  // The case that would be a security bug rather than a gap. A beat is append-only,
+  // replicates to every member and is never deletable, and on the other side of this
+  // port is a ring of sentences the device's owner did not write. So what is asserted is
+  // not that the port is careful — it is that a beat carries nothing from it at all,
+  // even when the port hands over the worst answer it could.
+  const { instance, log, kv } = leaky({ diagnostics: 'poisoned' })
+
+  const d = await instance.diagnostics()
+  assert.equal(d.observed, true, 'the fixture is not answering, so this case would prove nothing')
+
+  await instance.beat()
+  assert.ok(log.length > 0, 'something was written')
+
+  assertClean(JSON.stringify(log), 'the feed')
+  assertClean(JSON.stringify([...kv.entries()]), 'the store')
+
+  // Not only the secrets: no *count* and no kind name either, because the leak worth
+  // catching is the well-intentioned one — somebody folding the numbers into a census to
+  // make them visible to the fleet. They are device-wide and a beat is one network's.
+  const written = JSON.stringify(log)
+  assert.equal(written.includes('zone'), false, 'a journal kind reached the feed')
+  assert.equal(written.includes('dropped'), false, 'the ring\'s bound reached the feed')
+  assert.equal(written.includes('leaked-'), false, 'a journal-shaped key reached the feed')
+})
+
+test('a refused diagnostics port puts its wording nowhere, only its code', async () => {
+  const { instance, log, kv } = leaky({ diagnostics: 'refusing' })
+
+  const d = await instance.diagnostics()
+  assert.equal(d.observed, false)
+
+  await instance.beat()
+  assertClean(JSON.stringify(log), 'the feed after a refused diagnostics read')
+  assertClean(JSON.stringify([...kv.entries()]), 'the store')
+
+  // The fault is a code, and the code is the declared one. `attempt` never looks at the
+  // thrown value, which is the property that makes this hold for a message nobody
+  // predicted rather than only for the four in SECRETS.
+  const codes = instance.faults().map((/** @type {any} */ f) => f.code)
+  assert.ok(codes.includes('diagnostics-unreachable'), JSON.stringify(codes))
+  for (const code of codes) assert.ok(CODES.includes(code), `${code} is not declared`)
+})
+
+test('a name that cannot be a kind is collapsed rather than carried, however it is shaped', async () => {
+  // The second line, and it is a *shape* rather than a list. A vocabulary copy in here
+  // would go stale against the kernel's and hide a kind from a newer runtime, which is
+  // the one outcome this artifact is arranged against; a shape refuses everything that
+  // cannot be a kind while letting an unfamiliar one through. Every form `lib/codes.js`
+  // names is refused by it, which is what this case measures.
+  const { instance } = leaky({ diagnostics: 'poisoned' })
+  const d = await instance.diagnostics()
+
+  const names = d.kinds.map((/** @type {any} */ k) => k.kind)
+  const joined = names.join(' ')
+  for (const [name, secret] of Object.entries(SECRETS)) {
+    if (name === 'shortSecret') continue // shaped like a kind; see `leaky`'s note and `KIND`
+    assert.equal(joined.includes(secret), false, `a kind name carried ${name}: ${joined}`)
+  }
+
+  assert.ok(names.includes('unnamed'), `nothing collapsed: ${joined}`)
+  assert.equal(names.filter((/** @type {string} */ n) => n === 'unnamed').length, 1,
+    'three unusable names must land in one row, or the row count is attacker-chosen')
+
+  // The three that were poisoned carried 3, 4 and 6, and the sum is what survives —
+  // counted rather than dropped, for the reason a dropped fault is the failure this repo
+  // exists to stop.
+  const row = d.kinds.find((/** @type {any} */ k) => k.kind === 'unnamed')
+  assert.equal(row.count, 13, `the collapsed counts were lost: ${JSON.stringify(d.kinds)}`)
+
+  for (const name of names) {
+    assert.ok(name.length <= WIDTH, `a kind name is ${name.length} characters, past the bound`)
+  }
+
+  // And the kinds the kernel really does write are untouched by the collapse.
+  const by = Object.fromEntries(d.kinds.map((/** @type {any} */ k) => [k.kind, k.count]))
+  assert.equal(by.zone, 2)
+  assert.equal(by.network, 1)
+})
+
+test('the panel carries no journal wording either, which is the surface a person reads', async () => {
+  const { instance } = leaky({ diagnostics: 'poisoned' })
+  const panel = await instance.view()
+  assertClean(JSON.stringify(panel), 'the panel')
 })
 
 /* ───────────────── the vocabulary is closed, and closes on purpose ──────────── */

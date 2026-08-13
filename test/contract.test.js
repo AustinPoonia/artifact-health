@@ -68,13 +68,19 @@ const instance = () => health.build({
 /* ─────────────────── one description, in two files, identical ───────────────── */
 
 test('the manifest declares exactly the shape the artifact carries', () => {
-  const declared = manifest.contracts.find((/** @type {any} */ c) => c.id === 'health' && c.version === '1.0.0')
-  assert.ok(declared, 'the health contract is still declared here')
-  assert.ok(declared.shape, 'and it carries a shape, or the kernel checks nothing')
+  // Found by id and not by `id && version === '1.0.0'`, which is what it was. ROADMAP
+  // §6b took this contract to `1.1.0` and the version-pinned lookup then found nothing,
+  // so the case failed on "the health contract is still declared here" — a true message
+  // about the wrong thing. A suite comparing two copies of one document has no business
+  // pinning the version of the document; `the manifest version and the package version
+  // agree` is the case that owns the number, and it owns it once.
+  const declared = manifest.contracts.filter((/** @type {any} */ c) => c.id === 'health')
+  assert.equal(declared.length, 1, 'exactly one health contract is declared here')
+  assert.ok(declared[0].shape, 'and it carries a shape, or the kernel checks nothing')
 
   // Byte for byte. A description reworded in one file and not the other is the
   // whole failure mode, and it is invisible to every other test in this repo.
-  assert.equal(canonical(declared.shape), canonical(shape),
+  assert.equal(canonical(declared[0].shape), canonical(shape),
     'manifest.json and lib/shape.js have drifted; run `npm run shape` — the module is the source')
 })
 
@@ -181,12 +187,12 @@ test('the kind does not default itself on, so a network has to sign for it', () 
     'without this a monitor runs wherever the artifact is installed, which is a device deciding to report on itself')
 })
 
-test('it declares the three ports it builds on and no more', () => {
+test('it declares the four ports it builds on and no more', () => {
   const kind = manifest.kinds.find((/** @type {any} */ k) => k.key === 'health')
   const ports = kind.ports.map((/** @type {any} */ p) => `${p.name}:${p.contract}`).sort()
   assert.equal(ports.join(' '),
-    'feed:platform:feed roster:platform:network-view store:platform:store',
-    'exactly these three')
+    'diagnostics:platform:diagnostics feed:platform:feed roster:platform:network-view store:platform:store',
+    'exactly these four')
 
   // platform:blobs is deliberately absent. index.js has the argument: a blob store
   // is scoped per artifact, this one puts nothing in it, so the only fetch failures
@@ -198,16 +204,36 @@ test('it declares the three ports it builds on and no more', () => {
   assert.ok(!contracts.includes('platform:host'),
     'and emphatically no host port — that is user-level RCE, per THREAT-MODEL.md §1')
 
-  for (const p of kind.ports) {
-    assert.equal(p.cardinality, 'one', `${p.name} is required; this artifact has no optional-port behaviour to report`)
-  }
+  // Three required and one optional, and which is which is the whole of ROADMAP §6b's
+  // arrival here. This case used to assert `one` for every port on the argument that the
+  // artifact "has no optional-port behaviour to report"; it has exactly one now, and it
+  // is the behaviour `limits()` was written as a method for. Spelled per port rather than
+  // as a count, because the failure worth catching is a *feed* becoming optional — a
+  // monitor that would build without the log it measures — and a count cannot see that.
+  const cardinality = Object.fromEntries(kind.ports.map((/** @type {any} */ p) => [p.name, p.cardinality]))
+  assert.equal(cardinality.feed, 'one', 'a monitor that would build without the feed it measures reports nothing')
+  assert.equal(cardinality.store, 'one', 'the store is what suppresses duplicate beats; without it the feed grows forever')
+  assert.equal(cardinality.roster, 'one', 'the roster is the denominator every reading divides by')
+  assert.equal(cardinality.diagnostics, 'optional',
+    'the one port whose absence is survivable: without it limits() keeps the zone-deaths row and ' +
+    'diagnostics() answers observed false, which is the honest report rather than a refusal to run')
 })
 
 test('every contract it provides is one it or a dependency declares', () => {
   const kind = manifest.kinds.find((/** @type {any} */ k) => k.key === 'health')
   const provides = kind.provides.map((/** @type {any} */ p) => `${p.id}@${p.version}`).sort()
-  assert.equal(provides.join(' '), 'health@1.0.0 view@1.1.0',
+  assert.equal(provides.join(' '), 'health@1.1.0 view@1.1.0',
     'the contract it authors, and the panel vocabulary it renders into')
+
+  // The version it provides is the version it declares. Two numbers for one contract in
+  // one manifest is a document the kernel resolves one half of, and §6b's bump is
+  // exactly the commit that could have left them apart.
+  const declared = manifest.contracts.filter((/** @type {any} */ c) => c.id === 'health')
+  assert.equal(declared.length, 1)
+  assert.equal(
+    kind.provides.find((/** @type {any} */ p) => p.id === 'health').version,
+    declared[0].version,
+    'the kind provides a version of health that this manifest does not declare')
 
   // `view` is artifact-ui's, which is why ui is in deps. Providing a contract no
   // manifest in the graph declares is a plan fault, and one this repo can catch.

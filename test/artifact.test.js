@@ -31,6 +31,9 @@ const assert = require('bare-assert')
 const fs = require('bare-fs')
 const path = require('bare-path')
 const health = require('..')
+// The vocabulary, so the one case below that asserts a fault code is a declared one
+// compares against the register rather than against a string it remembered.
+const { CODES } = require('../lib/codes')
 
 /** @type {[string, () => Promise<void> | void][]} */
 const cases = []
@@ -103,12 +106,17 @@ function network (devices) {
      * device and each wants its own.
      *
      * @param {string} me
-     * @param {{ store?: any, roster?: any, feed?: any }} [override]
+     * @param {{ store?: any, roster?: any, feed?: any, diagnostics?: any }} [override]
      *   swaps one port for a refusing one. Named rather than a flag, because each
      *   case below refuses a *different* call and a boolean would not say which.
+     *
+     *   `diagnostics` is the odd one and is *additive* rather than a swap: the fixture
+     *   builds with the port **absent** by default, because absent is the state every
+     *   device was in before ROADMAP §6b and is the state `limits()` has to keep being
+     *   honest in. A case that wants the port supplies one.
      */
     device (me, override = {}) {
-      const fresh = override.store || override.roster || override.feed
+      const fresh = override.store || override.roster || override.feed || override.diagnostics
       if (!fresh) {
         const cached = instances.get(me)
         if (cached) return cached
@@ -157,7 +165,12 @@ function network (devices) {
       const built = health.build({
         feed: override.feed || feed,
         store: override.store || store,
-        roster: override.roster || view
+        roster: override.roster || view,
+        // Absent unless a case asks, and `undefined` rather than a stub that answers
+        // zeroes: a stub answering zeroes is the reading this whole artifact argues
+        // against, and putting one in the default fixture would make every case below
+        // pass against a device claiming it measured something.
+        diagnostics: override.diagnostics
       })
       if (!fresh) instances.set(me, built)
       return built
@@ -680,6 +693,276 @@ test('a device key on the panel is a code node, so a narrow frame cannot clip it
   const codes = walk(panel.nodes).filter((/** @type {any} */ n) => n.type === 'code').map((/** @type {any} */ n) => n.text)
   assert.ok(codes.includes('dev-b'),
     'the member key is in a code node — the one node a renderer promises never to ellipsize')
+})
+
+/* ────────── the kernel's own journal, through platform:diagnostics ─────────── */
+
+/**
+ * A `platform:diagnostics` port, at the one operation the contract declares.
+ *
+ * Written as a stand-in for the *port* and not for the kernel's ring, deliberately.
+ * What this artifact is answerable for is what it does with an answer; whether the
+ * kernel's journal really records a zone death is `ArtifactPatform`'s to prove, and
+ * it does — `test/diagnostics.test.js` there drives a real boot, the real
+ * `platform-diagnostics` implementation and this artifact in one process, which is
+ * the only place all three are visible at once.
+ *
+ * @param {Record<string, number>} kinds
+ * @param {number} [dropped]
+ */
+const journal = (kinds, dropped = 0) => ({ counts: () => ({ kinds, dropped }) })
+
+/** The seven the platform contract names, as a device with nothing wrong reports them. */
+const QUIET = { fetch: 0, network: 0, platform: 0, zone: 0, discovery: 0, command: 0, other: 0 }
+
+test('an unbound diagnostics port answers "not observed" rather than seven zeroes', async () => {
+  // The case that decides whether this artifact is worth having. Zero and unmeasured
+  // read identically on a dashboard and mean opposite things, and a device whose
+  // network never granted the port has measured nothing at all.
+  const net = network(['dev-a'])
+  const d = await net.device('dev-a').diagnostics()
+
+  assert.equal(d.observed, false, 'a device with no port must not claim to have observed anything')
+  assert.equal(d.kinds.length, 0, 'and must not answer a vocabulary of zeroes, which reads as health')
+  assert.equal(d.dropped, 0)
+
+  // And no fault: not being granted a port is not a failure of this device.
+  const codes = net.device('dev-a').faults().map((f) => f.code)
+  assert.equal(codes.includes('diagnostics-unreachable'), false,
+    'an unbound port recorded a fault, which sends an operator to a machine over an admin decision')
+})
+
+test('a bound port is passed through kind for kind, with nothing renamed and nothing summed', async () => {
+  const net = network(['dev-a'])
+  const d = await net.device('dev-a', {
+    diagnostics: journal({ ...QUIET, zone: 3, network: 5, fetch: 1 }, 12)
+  }).diagnostics()
+
+  assert.equal(d.observed, true)
+  assert.equal(d.dropped, 12, 'the bound is what makes every count below a lower bound')
+
+  const by = Object.fromEntries(d.kinds.map((k) => [k.kind, k.count]))
+  assert.equal(by.zone, 3, 'the one kind that means exactly what it says')
+  assert.equal(by.network, 5)
+  assert.equal(by.fetch, 1)
+  assert.equal(d.kinds.length, 7, 'every kind the port answered is a row; a filter here would hide a newer kernel')
+
+  // Nothing is renamed and nothing is aggregated. A `refusals` field would be this
+  // artifact putting a number under a heading the kernel never promised, which is the
+  // failure `limits()` exists to prevent — one layer in from where it prevents it.
+  assert.equal(JSON.stringify(d).includes('refusal'), false,
+    'the network count must not be re-presented as refusals')
+})
+
+test('a kind from a newer kernel arrives as a row rather than being filtered away', async () => {
+  // The forward-compatibility half. This artifact does not hold a copy of the
+  // vocabulary to check against, on purpose: the port already guarantees the names are
+  // from a closed set and buckets anything else as `other`, so a filter in here would
+  // only ever hide a kernel this release has not met.
+  const net = network(['dev-a'])
+  const d = await net.device('dev-a', {
+    diagnostics: journal({ ...QUIET, zone: 1, secrets: 4 })
+  }).diagnostics()
+
+  const by = Object.fromEntries(d.kinds.map((k) => [k.kind, k.count]))
+  assert.equal(by.secrets, 4, 'a kind this release has never heard of is reported, not dropped')
+  assert.equal(by.zone, 1)
+})
+
+test('a refused port is a named fault and still answers "not observed", not zero', async () => {
+  // The distinction `diagnostics-unreachable` exists for. An unbound port and a broken
+  // one both answer `observed: false`; only the second is a fault, and an operator
+  // reading the two the same way goes to the wrong console.
+  const net = network(['dev-a'])
+  const dev = net.device('dev-a', {
+    diagnostics: { counts: () => { throw new Error('the port is not answering') } }
+  })
+
+  const d = await dev.diagnostics()
+  assert.equal(d.observed, false, 'a refused read must not be reported as a measurement')
+  assert.equal(d.kinds.length, 0)
+
+  const codes = dev.faults().map((f) => f.code)
+  assert.ok(codes.includes('diagnostics-unreachable'),
+    `a refused port is a fault this device saw: ${JSON.stringify(codes)}`)
+})
+
+test('a malformed answer is not observed and is not a fault, because skew is not failure', async () => {
+  // A port that answered something this release cannot read did not answer. It is also
+  // not this device failing — it is two releases disagreeing about a shape — so it is
+  // reported as unobserved and no fault is counted. Calling it a fault would put a
+  // version skew under a heading that says the kernel is broken.
+  const net = network(['dev-a'])
+  for (const answer of [null, 'counts', 42, {}, { kinds: 'seven' }, { kinds: null, dropped: 1 }]) {
+    const dev = net.device('dev-a', { diagnostics: { counts: () => answer } })
+    const d = await dev.diagnostics()
+    assert.equal(d.observed, false, `a ${JSON.stringify(answer)} answer was treated as a reading`)
+    assert.equal(d.kinds.length, 0)
+    assert.equal(dev.faults().length, 0, `skew was counted as a fault for ${JSON.stringify(answer)}`)
+  }
+})
+
+test('a count that is not a number is floored rather than published as one', async () => {
+  // Defensive across a port boundary, exactly as the roster fold is. A monitor that
+  // threw on a malformed row is a monitor that stopped monitoring, and a NaN reaching a
+  // field the contract declares as a number is a fault on somebody's device mid-render.
+  const net = network(['dev-a'])
+  const d = await net.device('dev-a', {
+    diagnostics: journal({ ...QUIET, zone: /** @type {any} */ ('many'), network: /** @type {any} */ (-4) })
+  }).diagnostics()
+
+  const by = Object.fromEntries(d.kinds.map((k) => [k.kind, k.count]))
+  assert.equal(by.zone, 0, 'a non-numeric count is zero, not NaN')
+  assert.equal(by.network, 0, 'and a negative one is zero, because a count of events cannot be below none')
+  for (const row of d.kinds) assert.equal(Number.isFinite(row.count), true, `${row.kind} is not finite`)
+})
+
+test('reading diagnostics twice does not change what the next caller sees', async () => {
+  // The shared-instance question, asked of the new port. It is a pure read of a ring
+  // this artifact cannot write to, so two consumers of one instance cannot signal
+  // through it beyond the counts the device itself produced.
+  const net = network(['dev-a'])
+  const dev = net.device('dev-a', { diagnostics: journal({ ...QUIET, zone: 2 }) })
+
+  const first = await dev.diagnostics()
+  first.kinds.push({ kind: 'invented', count: 99 })
+  first.observed = false
+  first.dropped = 99
+
+  const second = await dev.diagnostics()
+  assert.equal(second.observed, true, 'a caller edited the next caller\'s reading')
+  assert.equal(second.dropped, 0)
+  assert.equal(second.kinds.length, 7, 'a caller added a row the next caller sees')
+})
+
+test('the fault this port can raise is in the closed vocabulary like every other', async () => {
+  // The vocabulary widened for this port (`diagnostics-unreachable`), and widening it is
+  // what took this contract to 1.1.0 — `lib/codes.js` says a code is read out of beats
+  // written by members running other releases, so a new one is a declared change rather
+  // than a patch. This is the case that would notice a call site inventing a string
+  // instead: `classify` would answer `unknown` and the count would appear with no name.
+  const net = network(['dev-a'])
+  const dev = net.device('dev-a', {
+    diagnostics: { counts: () => { throw new Error('nope') } }
+  })
+  await dev.diagnostics()
+
+  const codes = dev.faults().map((f) => f.code)
+  assert.equal(codes.includes('unknown'), false, 'the call site passed something outside the vocabulary')
+  for (const code of codes) {
+    assert.ok(CODES.includes(code), `${code} is not a declared code`)
+  }
+})
+
+/* ──────── the limits list moves with the binding, which is why it is a call ──── */
+
+test('binding the port drops the zone-deaths row and keeps the two it cannot close', () => {
+  const net = network(['dev-a'])
+  const bound = net.device('dev-a', { diagnostics: journal(QUIET) }).limits()
+  const subjects = bound.map((x) => x.subject)
+
+  assert.equal(subjects.includes('zone deaths'), false,
+    'zone is a kind with one writer, so the count is the zone-death count; the row is not a limit any more')
+  assert.ok(subjects.includes('refusals'), 'a refusal is still counted under the same kind as a moved pin')
+  assert.ok(subjects.includes('fetch failures'), 'a fetch failure still tears the device down before a reader exists')
+  assert.ok(subjects.includes('total partition'), 'no port touches this one')
+})
+
+test('and the two that stay say something different once the port is bound', () => {
+  const net = network(['dev-a'])
+  const without = net.device('dev-a').limits()
+  const with_ = net.device('dev-a', { diagnostics: journal(QUIET) }).limits()
+
+  /** @param {any[]} rows @param {string} subject */
+  const row = (rows, subject) => {
+    const found = rows.find((x) => x.subject === subject)
+    if (found === undefined) assert.fail(`${subject} is missing from limits()`)
+    return found
+  }
+
+  // The reason has to move, and this is the case that says why it is not cosmetic. The
+  // unbound reason is "no capability exposes them". Bound, that is false — one does —
+  // and a reader who trusted the stale sentence would conclude no number exists, go
+  // looking, find the network count, and use it as a refusal count.
+  assert.notEqual(row(without, 'refusals').because, row(with_, 'refusals').because,
+    'the refusals reason is unchanged, so it still says no capability exposes them')
+  assert.ok(/not a refusal count/.test(row(with_, 'refusals').because),
+    'the bound reason must name the conflation, which is the whole hazard')
+  assert.ok(/moved platform pin/.test(row(with_, 'refusals').because),
+    'and say what else is in that count')
+
+  assert.equal(row(with_, 'fetch failures').observed, 'none',
+    'a non-zero fetch count must not soften this row: those are the fetches that worked')
+  assert.ok(/rollback being refused/.test(row(with_, 'fetch failures').because),
+    'and it has to say that one of them is a defence engaging, or a dashboard reads it as a fault')
+
+  // Every row, either way, is still a blind spot rather than a claim.
+  for (const rows of [without, with_]) {
+    for (const r of rows) {
+      assert.ok(['none', 'partial'].includes(r.observed), `${r.subject} claims ${r.observed}`)
+      assert.ok(r.because.length > 0 && r.covered.length > 0, `${r.subject} is missing a reason or a cover`)
+    }
+  }
+})
+
+test('binding the port adds the limit it creates, rather than only removing one', () => {
+  // A port can create a blind spot as well as close one, and this is the honest form of
+  // that: the counts are device-wide, so they are deliberately kept out of the beat, so
+  // a zone death is visible to whoever is at the device and not to the fleet. A list
+  // that only ever shrank would be a list that stopped describing the device.
+  const net = network(['dev-a'])
+  const bound = net.device('dev-a', { diagnostics: journal(QUIET) }).limits()
+  const row = bound.find((x) => /to the fleet/.test(x.subject))
+  if (row === undefined) assert.fail(`no fleet row in ${JSON.stringify(bound.map((x) => x.subject))}`)
+  assert.equal(row.observed, 'none')
+  assert.ok(/replicates to one network/.test(row.because), 'and it says why, in terms of the feed rather than of taste')
+
+  // Absent on a device with no port, because there the fleet row would be describing a
+  // number nobody has.
+  const unbound = network(['dev-b']).device('dev-b').limits().map((x) => x.subject)
+  assert.equal(unbound.some((s) => /to the fleet/.test(s)), false,
+    'a device with no port reported the cost of a port it does not have')
+})
+
+/* ───────────── the panel is where an operator actually meets the number ─────── */
+
+test('the panel shows the counts, and qualifies them in the same block', async () => {
+  const net = network(['dev-a'])
+  const panel = await net.device('dev-a', {
+    diagnostics: journal({ ...QUIET, zone: 3, network: 5 }, 2)
+  }).view()
+
+  /** @param {any[]} nodes @returns {any[]} */
+  const walk = (nodes) => nodes.flatMap((n) => [n, ...walk(Array.isArray(n.children) ? n.children : [])])
+  const all = walk(panel.nodes)
+
+  const block = all.find((n) => n.type === 'rows' && /journal/.test(String(n.label)))
+  if (block === undefined) assert.fail(`no journal block on the panel: ${JSON.stringify(panel.nodes)}`)
+
+  const fields = Object.fromEntries(block.children.map((/** @type {any} */ c) => [c.label, c.value]))
+  assert.equal(fields.zone, '3', 'the count an operator came for')
+  assert.equal(fields.network, '5')
+  assert.equal(fields['dropped by the bound'], '2',
+    'in the same block as the counts, because it is what makes every one of them a lower bound')
+
+  // The sentence that stops `network: 5` being read as five refusals, and it is a
+  // warning rather than a muted aside for the same reason the blind spots are.
+  const note = all.find((n) => n.type === 'text' && /not a count of refusals/.test(String(n.text)))
+  if (note === undefined) assert.fail('the panel shows a network count with nothing saying what it is not')
+  assert.equal(note.tone, 'warning', 'the qualification is the part a reader must not skim')
+  assert.ok(/every network it has joined/.test(note.text), 'and it discloses the scope')
+})
+
+test('a device with no port shows no journal block at all, and still shows the blind spot', async () => {
+  // The panel half of the first case in this section. Seven zeroes under a heading
+  // would be a measurement nobody took, printed on the one surface an operator reads,
+  // two nodes above a limits() line saying the opposite.
+  const net = network(['dev-a'])
+  const panel = await net.device('dev-a').view()
+  const flat = JSON.stringify(panel.nodes)
+
+  assert.equal(/journal/.test(flat), false, 'a device with no port drew a journal block')
+  assert.ok(flat.includes('zone deaths'), 'and the blind spot is still on the panel where the count is not')
 })
 
 /* ───────────────── it formats nothing, the way every artifact here must ──────── */

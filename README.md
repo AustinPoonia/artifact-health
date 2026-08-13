@@ -10,22 +10,31 @@ nothing from this repo existing.
 
 ## What it observes, and what it cannot
 
-§6b names four things. **One is fully reachable from inside a realm, one only in a
-degenerate form, and two are not reachable at all** — so `limits()` returns the blind
-spots as data. A dashboard that renders a zero nobody measured is worse than one that
-renders nothing, which is the whole reason that operation is part of the contract
-rather than a paragraph here.
+§6b names four things. **Two are reachable, and two are not** — so `limits()` returns
+the blind spots as data. A dashboard that renders a zero nobody measured is worse than
+one that renders nothing, which is the whole reason that operation is part of the
+contract rather than a paragraph here.
 
 | §6b asks for | Observed | How, or why not |
 |---|---|---|
 | replication health | **fully** | the signed roster is a denominator that needs no peer; `entries()` is a numerator that does. Their difference is a replication deficit |
-| refusals | partial | only refusals of *this instance's own* calls. A refusal is what stopped an artifact being built, so the artifact that would report it may be the one refused |
-| fetch failures | none | a release that cannot be fetched fails during boot, before any artifact runs, on the path where the whole device is torn down |
-| zone deaths | partial | only this instance's own, seen from outside as silence — indistinguishable from the machine being off |
+| zone deaths | **fully, on this device** | `platform:diagnostics` counts them. The kernel writes a death under kind `zone`, that kind has exactly one writer, so the count is the count. Not in a beat — see below |
+| refusals | partial | the same port counts them under `network`, together with moved pins, expired settles and unresolved invites, so no number here is a refusal count. And a refusal is what stopped an artifact being built, so the artifact that would report it may be the one refused |
+| fetch failures | none | the one call site that fetches throws uncaught and tears the device down before any artifact runs, so the note is written to a ring nobody is left to read. Worse: the `fetch` count a *running* device shows is fetches that succeeded — one of them being a rollback refused, which is a defence engaging |
 
-Closing the last three is **one kernel change**, not more work here: a read-only
-`platform:diagnostics` port onto the `Journal` the kernel already keeps. `index.js`'s
-header has the design and the risk that comes with it.
+§6b said one kernel change would close the last three. It closed **one**, and the
+arithmetic is the interesting part: `platform:diagnostics` met every constraint §6b
+named — read-only, counts per kind, not one character of the journal's text — and it
+still cannot separate a refusal from a moved pin, because the kernel's six journal
+*kinds* were chosen for a person reading a terminal and a kind is not a category. A port
+onto a journal cannot expose what the journal does not separate, nor expose to a realm
+what the process died before reaching. Closing the rest is a **kernel** change: a finer
+vocabulary at the `journal.note` call sites, then a second version of that capability
+and of this contract.
+
+`limits()` shrinks and grows **with the binding**, which is why it is a call rather than
+a constant. A device that binds the port loses the `zone deaths` row and gains one the
+port creates: nothing it reports reaches the fleet, deliberately.
 
 ## The two things worth reading the source for
 
@@ -43,19 +52,31 @@ writes into, and that is the channel.
 and is not confidential, so a secret that lands in one is on every member's disk
 permanently. `lib/journal.js` may filter free text with a regex because it dies with
 the process; here the filter would be the first line of defence instead of the second.
-So a fault is a code from a closed six-member vocabulary, a census is integers and
+So a fault is a code from a closed seven-member vocabulary, a census is integers and
 device keys, and there is no field on a beat an unbounded string can enter.
 `lib/codes.js` has the argument and `test/redaction.test.js` fires real secrets down
-every failing path to measure it.
+every failing path to measure it — including down the diagnostics port, whose substrate
+is the journal's free text and which is therefore the one binding this argument had to
+survive.
+
+**And nothing from the journal reaches a beat at all.** The kernel's ring is
+device-wide: one per process, shared by every network this device has joined. A beat
+replicates to *one* network's members, so putting those counts into one would hand that
+network's members another network's event volume. A device may tell an artifact running
+on it about itself; that artifact may not tell a network about a network it is not in.
+That is the same asymmetry `lib/codes.js` draws between a ring that dies with the
+process and a log that replicates forever, one boundary further out — and its price is a
+row in `limits()`: a zone death is visible to whoever is looking at the device and not
+to the fleet.
 
 It runs only where a signed `instance.create` names it (`instances: "explicit"`).
 
 ## Layout
 
     index.js          the artifact: build(deps) → the health and view contracts
-    lib/shape.js      health@1.0.0's shape, the source manifest.json is generated from
+    lib/shape.js      health@1.1.0's shape, the source manifest.json is generated from
     lib/codes.js      the closed fault vocabulary, and why it is closed
     manifest.json     the document the kernel reads; regenerate with `npm run shape`
 
-    npm test          # 51 assertions under the Bare runtime
+    npm test          # 68 assertions under the Bare runtime
     npm run typecheck # plain JS + JSDoc, via tsc --noEmit
