@@ -19,22 +19,26 @@ contract rather than a paragraph here.
 |---|---|---|
 | replication health | **fully** | the signed roster is a denominator that needs no peer; `entries()` is a numerator that does. Their difference is a replication deficit |
 | zone deaths | **fully, on this device** | `platform:diagnostics` counts them. The kernel writes a death under kind `zone`, that kind has exactly one writer, so the count is the count. Not in a beat — see below |
-| refusals | partial | the same port counts them under `network`, together with moved pins, expired settles and unresolved invites, so no number here is a refusal count. And a refusal is what stopped an artifact being built, so the artifact that would report it may be the one refused |
-| fetch failures | none | the one call site that fetches throws uncaught and tears the device down before any artifact runs, so the note is written to a ring nobody is left to read. Worse: the `fetch` count a *running* device shows is fetches that succeeded — one of them being a rollback refused, which is a defence engaging |
+| refusals | **fully, on this device** | the kernel writes a refusal under kind `refused` — a contract nothing satisfies, an instance nothing could deliver, an unmeetable platform pin, a network retired mid-session, a release below the anti-rollback floor — so the count is a refusal count. A refusal that stopped *this* artifact is still unreportable by it, which is the silence row rather than a second gap |
+| fetch failures | none | the one call site that fetches throws uncaught and tears the device down before any artifact runs, so the note is written to a ring nobody is left to read. The `fetch` count is now failures only — the successes are under `served` and the refused rollback under `refused` — so it is the right number and it is zero on every device alive enough to be asked |
 
 One kernel change was said to close the last three. It closed **one**, and the
-arithmetic is the interesting part: `platform:diagnostics` met every constraint named
+arithmetic was the interesting part: `platform:diagnostics@1` met every constraint named
 for it — read-only, counts per kind, not one character of the journal's text — and it
-still cannot separate a refusal from a moved pin, because the kernel's six journal
-*kinds* were chosen for a person reading a terminal and a kind is not a category. A port
-onto a journal cannot expose what the journal does not separate, nor expose to a realm
-what the process died before reaching. Closing the rest is a **kernel** change: a finer
-vocabulary at the `journal.note` call sites, then a second version of that capability
-and of this contract.
+still could not separate a refusal from a moved pin, because the kernel's six journal
+*kinds* were chosen for a person reading a terminal and a kind is not a category. **A
+port onto a journal cannot expose what the journal does not separate.**
+
+So the second change was made where the separation lives. The kernel's vocabulary now
+splits on who decided and whether the thing happened, which took it from six words to
+eight; `platform:diagnostics@2` names them; this contract reports them at `1.2.0`. Three
+repositories in that order, because each can only separate what the one below it already
+did. What is left is fetch failures, and no further kind fixes it: the failure destroys
+the reader. That one is read by whoever is standing at the machine.
 
 `limits()` shrinks and grows **with the binding**, which is why it is a call rather than
-a constant. A device that binds the port loses the `zone deaths` row and gains one the
-port creates: nothing it reports reaches the fleet, deliberately.
+a constant. A device that binds the port loses the `zone deaths` and `refusals` rows and
+gains one the port creates: nothing it reports reaches the fleet, deliberately.
 
 ## The two things worth reading the source for
 
@@ -74,7 +78,7 @@ It runs only where a signed `instance.create` names it (`instances: "explicit"`)
 ## Layout
 
     index.js          the artifact: build(deps) → the health and view contracts
-    lib/shape.js      health@1.1.0's shape, the source manifest.json is generated from
+    lib/shape.js      health@1.2.0's shape, the source manifest.json is generated from
     lib/codes.js      the closed fault vocabulary, and why it is closed
     manifest.json     the document the kernel reads; regenerate with `npm run shape`
 

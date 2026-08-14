@@ -1,6 +1,6 @@
 {
   "name": "artifact-health",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "What a device can see of its network's replication, reported through the network's own feed \u2014 observability as an artifact, with its blind spots declared",
   "license": "Apache-2.0",
   "type": "commonjs",

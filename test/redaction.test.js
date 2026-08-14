@@ -139,11 +139,13 @@ function leaky (breaks = {}) {
    * accident `journal.js` names as having actually happened in this tree.
    */
   const diagnostics = breaks.diagnostics === 'refusing'
-    ? { counts: () => boom('counts') }
+    ? { tally: () => boom('tally') }
     : {
-        counts: () => ({
+        tally: () => ({
           kinds: {
             fetch: 0,
+            served: 0,
+            refused: 1,
             network: 1,
             platform: 0,
             zone: 2,

@@ -710,10 +710,17 @@ test('a device key on the panel is a code node, so a narrow frame cannot clip it
  * @param {Record<string, number>} kinds
  * @param {number} [dropped]
  */
-const journal = (kinds, dropped = 0) => ({ counts: () => ({ kinds, dropped }) })
+const journal = (kinds, dropped = 0) => ({ tally: () => ({ kinds, dropped }) })
 
-/** The seven the platform contract names, as a device with nothing wrong reports them. */
-const QUIET = { fetch: 0, network: 0, platform: 0, zone: 0, discovery: 0, command: 0, other: 0 }
+/**
+ * The nine `platform:diagnostics@2` names, as a device with nothing wrong reports them.
+ *
+ * `tally` and not `counts` above, for the same reason this list grew by three: the port
+ * publishes both operations and this artifact's manifest declares `^2.0.0`, so `tally` is
+ * the one the kernel resolves and validates. A stub answering `counts` would be testing a
+ * call this release does not make.
+ */
+const QUIET = { fetch: 0, served: 0, refused: 0, network: 0, platform: 0, zone: 0, discovery: 0, command: 0, other: 0 }
 
 test('an unbound diagnostics port answers "not observed" rather than seven zeroes', async () => {
   // The case that decides whether this artifact is worth having. Zero and unmeasured
@@ -745,7 +752,8 @@ test('a bound port is passed through kind for kind, with nothing renamed and not
   assert.equal(by.zone, 3, 'the one kind that means exactly what it says')
   assert.equal(by.network, 5)
   assert.equal(by.fetch, 1)
-  assert.equal(d.kinds.length, 7, 'every kind the port answered is a row; a filter here would hide a newer kernel')
+  assert.equal(d.kinds.length, Object.keys(QUIET).length,
+    'every kind the port answered is a row; a filter here would hide a newer kernel')
 
   // Nothing is renamed and nothing is aggregated. A `refusals` field would be this
   // artifact putting a number under a heading the kernel never promised, which is the
@@ -793,8 +801,8 @@ test('a malformed answer is not observed and is not a fault, because skew is not
   // reported as unobserved and no fault is counted. Calling it a fault would put a
   // version skew under a heading that says the kernel is broken.
   const net = network(['dev-a'])
-  for (const answer of [null, 'counts', 42, {}, { kinds: 'seven' }, { kinds: null, dropped: 1 }]) {
-    const dev = net.device('dev-a', { diagnostics: { counts: () => answer } })
+  for (const answer of [null, 'tally', 42, {}, { kinds: 'nine' }, { kinds: null, dropped: 1 }]) {
+    const dev = net.device('dev-a', { diagnostics: { tally: () => answer } })
     const d = await dev.diagnostics()
     assert.equal(d.observed, false, `a ${JSON.stringify(answer)} answer was treated as a reading`)
     assert.equal(d.kinds.length, 0)
@@ -832,7 +840,7 @@ test('reading diagnostics twice does not change what the next caller sees', asyn
   const second = await dev.diagnostics()
   assert.equal(second.observed, true, 'a caller edited the next caller\'s reading')
   assert.equal(second.dropped, 0)
-  assert.equal(second.kinds.length, 7, 'a caller added a row the next caller sees')
+  assert.equal(second.kinds.length, Object.keys(QUIET).length, 'a caller added a row the next caller sees')
 })
 
 test('the fault this port can raise is in the closed vocabulary like every other', async () => {
@@ -863,12 +871,16 @@ test('binding the port drops the zone-deaths row and keeps the two it cannot clo
 
   assert.equal(subjects.includes('zone deaths'), false,
     'zone is a kind with one writer, so the count is the zone-death count; the row is not a limit any more')
-  assert.ok(subjects.includes('refusals'), 'a refusal is still counted under the same kind as a moved pin')
+  // The second row to leave, and the one this release is for. `refused` is a kind with
+  // its own writers now, so the count is a refusal count in the way `zone` is a death
+  // count, and a row saying otherwise would be the stale claim.
+  assert.equal(subjects.includes('refusals'), false,
+    'the kernel counts refusals apart from pin moves now; the row is not a limit any more')
   assert.ok(subjects.includes('fetch failures'), 'a fetch failure still tears the device down before a reader exists')
   assert.ok(subjects.includes('total partition'), 'no port touches this one')
 })
 
-test('and the two that stay say something different once the port is bound', () => {
+test('and the one that stays says something different once the port is bound', () => {
   const net = network(['dev-a'])
   const without = net.device('dev-a').limits()
   const with_ = net.device('dev-a', { diagnostics: journal(QUIET) }).limits()
@@ -880,21 +892,28 @@ test('and the two that stay say something different once the port is bound', () 
     return found
   }
 
-  // The reason has to move, and this is the case that says why it is not cosmetic. The
-  // unbound reason is "no capability exposes them". Bound, that is false — one does —
-  // and a reader who trusted the stale sentence would conclude no number exists, go
-  // looking, find the network count, and use it as a refusal count.
-  assert.notEqual(row(without, 'refusals').because, row(with_, 'refusals').because,
-    'the refusals reason is unchanged, so it still says no capability exposes them')
-  assert.ok(/not a refusal count/.test(row(with_, 'refusals').because),
-    'the bound reason must name the conflation, which is the whole hazard')
-  assert.ok(/moved platform pin/.test(row(with_, 'refusals').because),
-    'and say what else is in that count')
-
+  // The reason has to move, and this is the case that says why it is not cosmetic. It
+  // has moved twice. Unbound it is "a release that cannot be fetched fails during boot".
+  // Bound it used to add that the number you *can* see is mostly successes, one of them
+  // the anti-rollback floor engaging — the sentence that stopped a dashboard reading a
+  // defence as a fault. That hazard is gone from the kernel rather than warned about
+  // here: a fetch success is a `served` and a refused rollback is a `refused`, so the
+  // bound reason now has to say the opposite thing, which is that the number is right
+  // and is zero for a structural reason.
+  assert.notEqual(row(without, 'fetch failures').because, row(with_, 'fetch failures').because,
+    'the bound and unbound reasons are identical, so one of them is not saying what the port changed')
   assert.equal(row(with_, 'fetch failures').observed, 'none',
-    'a non-zero fetch count must not soften this row: those are the fetches that worked')
-  assert.ok(/rollback being refused/.test(row(with_, 'fetch failures').because),
-    'and it has to say that one of them is a defence engaging, or a dashboard reads it as a fault')
+    'a fetch count that is structurally zero must not soften this row into partial')
+  assert.ok(/because this device came up/.test(row(with_, 'fetch failures').because),
+    'the bound reason must say why the zero is not evidence, or a dashboard reads it as health')
+  assert.equal(/rollback/.test(row(with_, 'fetch failures').because), false,
+    'the rollback warning is stale: a refused rollback is no longer in the fetch count at all')
+
+  // And the row that left has to be gone from the bound list and present on the unbound
+  // one, because a device with no port really cannot see refusals.
+  assert.ok(without.some((r) => r.subject === 'refusals'), 'an unbound device claims to observe refusals')
+  assert.equal(with_.some((r) => r.subject === 'refusals'), false,
+    'the refusals row survived the change that closed it')
 
   // Every row, either way, is still a blind spot rather than a claim.
   for (const rows of [without, with_]) {
@@ -929,7 +948,7 @@ test('binding the port adds the limit it creates, rather than only removing one'
 test('the panel shows the counts, and qualifies them in the same block', async () => {
   const net = network(['dev-a'])
   const panel = await net.device('dev-a', {
-    diagnostics: journal({ ...QUIET, zone: 3, network: 5 }, 2)
+    diagnostics: journal({ ...QUIET, zone: 3, network: 5, refused: 4 }, 2)
   }).view()
 
   /** @param {any[]} nodes @returns {any[]} */
@@ -942,15 +961,20 @@ test('the panel shows the counts, and qualifies them in the same block', async (
   const fields = Object.fromEntries(block.children.map((/** @type {any} */ c) => [c.label, c.value]))
   assert.equal(fields.zone, '3', 'the count an operator came for')
   assert.equal(fields.network, '5')
+  assert.equal(fields.refused, '4', 'the count this release added, on the surface an operator reads')
   assert.equal(fields['dropped by the bound'], '2',
     'in the same block as the counts, because it is what makes every one of them a lower bound')
 
   // The sentence that stops `network: 5` being read as five refusals, and it is a
-  // warning rather than a muted aside for the same reason the blind spots are.
-  const note = all.find((n) => n.type === 'text' && /not a count of refusals/.test(String(n.text)))
+  // warning rather than a muted aside for the same reason the blind spots are. It also
+  // has to say the new thing, because `fetch: 0` on this panel is the number most likely
+  // to be read as good news.
+  const note = all.find((n) => n.type === 'text' && /network is still several things/.test(String(n.text)))
   if (note === undefined) assert.fail('the panel shows a network count with nothing saying what it is not')
   assert.equal(note.tone, 'warning', 'the qualification is the part a reader must not skim')
   assert.ok(/every network it has joined/.test(note.text), 'and it discloses the scope')
+  assert.ok(/takes the boot down/.test(note.text),
+    'a fetch count of zero on a running device is not good news and the panel has to say so')
 })
 
 test('a device with no port shows no journal block at all, and still shows the blind spot', async () => {

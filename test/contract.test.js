@@ -222,12 +222,15 @@ test('it declares the four ports it builds on and no more', () => {
 test('every contract it provides is one it or a dependency declares', () => {
   const kind = manifest.kinds.find((/** @type {any} */ k) => k.key === 'health')
   const provides = kind.provides.map((/** @type {any} */ p) => `${p.id}@${p.version}`).sort()
-  assert.equal(provides.join(' '), 'health@1.1.0 view@1.1.0',
+  // `health` moves with this artifact and `view` does not: `view` is `artifact-ui`'s
+  // contract, so its version is a fact about that repo's declaration and pinning it to
+  // this artifact's own number would be claiming to have published somebody else's.
+  assert.equal(provides.join(' '), 'health@1.2.0 view@1.1.0',
     'the contract it authors, and the panel vocabulary it renders into')
 
   // The version it provides is the version it declares. Two numbers for one contract in
-  // one manifest is a document the kernel resolves one half of, and the `1.1.0` bump was
-  // exactly the commit that could have left them apart.
+  // one manifest is a document the kernel resolves one half of, and both the `1.1.0` and
+  // the `1.2.0` bumps were commits that could have left them apart.
   const declared = manifest.contracts.filter((/** @type {any} */ c) => c.id === 'health')
   assert.equal(declared.length, 1)
   assert.equal(
