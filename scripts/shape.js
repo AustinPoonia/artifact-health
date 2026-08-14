@@ -29,7 +29,7 @@ const file = path.join(__dirname, '..', 'manifest.json')
 const manifest = JSON.parse(fs.readFileSync(file, 'utf8'))
 
 // The version is read off the manifest rather than written here, and that is a
-// correction rather than a convenience. It was the literal `'1.0.0'`, and ROADMAP §6b's
+// correction rather than a convenience. It was the literal `'1.0.0'`, and
 // `platform:diagnostics` took this contract to `1.1.0` — so a script whose whole job is
 // to keep two copies of one document in step would have stopped finding the document it
 // writes into, on the commit that needed it most. The manifest declares one `health`

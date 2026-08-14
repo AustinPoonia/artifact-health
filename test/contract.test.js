@@ -22,8 +22,8 @@
  *
  * ## The manifest claims this artifact does not default itself on, and that is a case
  *
- * `instances: "explicit"` is not decoration here. `ROADMAP.md` §6b requires this to
- * be opt-in per network by a signed `instance.create`, and `THREAT-MODEL.md` §2.4
+ * `instances: "explicit"` is not decoration here. A monitor has to be opt-in per
+ * network by a signed `instance.create`, and `THREAT-MODEL.md` §2.4
  * names the field as the one lever on the shared-provider residual that does not cost
  * a binding per consumer. A commit that dropped it would turn a monitor an admin
  * chose into a monitor every network with this artifact installed silently runs, and
@@ -68,8 +68,8 @@ const instance = () => health.build({
 /* ─────────────────── one description, in two files, identical ───────────────── */
 
 test('the manifest declares exactly the shape the artifact carries', () => {
-  // Found by id and not by `id && version === '1.0.0'`, which is what it was. ROADMAP
-  // §6b took this contract to `1.1.0` and the version-pinned lookup then found nothing,
+  // Found by id and not by `id && version === '1.0.0'`, which is what it was. Binding
+  // `platform:diagnostics` took this contract to `1.1.0` and the version-pinned lookup then found nothing,
   // so the case failed on "the health contract is still declared here" — a true message
   // about the wrong thing. A suite comparing two copies of one document has no business
   // pinning the version of the document; `the manifest version and the package version
@@ -204,8 +204,8 @@ test('it declares the four ports it builds on and no more', () => {
   assert.ok(!contracts.includes('platform:host'),
     'and emphatically no host port — that is user-level RCE, per THREAT-MODEL.md §1')
 
-  // Three required and one optional, and which is which is the whole of ROADMAP §6b's
-  // arrival here. This case used to assert `one` for every port on the argument that the
+  // Three required and one optional, and which is which is the whole of the diagnostics
+  // port's arrival here. This case used to assert `one` for every port on the argument that the
   // artifact "has no optional-port behaviour to report"; it has exactly one now, and it
   // is the behaviour `limits()` was written as a method for. Spelled per port rather than
   // as a count, because the failure worth catching is a *feed* becoming optional — a
@@ -226,7 +226,7 @@ test('every contract it provides is one it or a dependency declares', () => {
     'the contract it authors, and the panel vocabulary it renders into')
 
   // The version it provides is the version it declares. Two numbers for one contract in
-  // one manifest is a document the kernel resolves one half of, and §6b's bump is
+  // one manifest is a document the kernel resolves one half of, and the `1.1.0` bump was
   // exactly the commit that could have left them apart.
   const declared = manifest.contracts.filter((/** @type {any} */ c) => c.id === 'health')
   assert.equal(declared.length, 1)

@@ -1,19 +1,19 @@
 /**
  * What this device can see of the network's replication, reported as an artifact.
  *
- * `ROADMAP.md` §6b: logging and metrics are the second thing that must not be
+ * Logging and metrics are the second thing that must not be
  * kernel code, and the kernel keeps only `journal.js` and gains nothing. So this
  * is an artifact, in a realm, holding nothing but declared ports, and the
  * interesting question is not how to write it — it is **what is actually reachable
  * from in here**, because a monitor that answers a question it cannot measure is
  * worse than no monitor.
  *
- * ## The four things §6b names, and which of them exist from inside a realm
+ * ## The four categories, and which of them exist from inside a realm
  *
- * §6b asks for "replication health, refusals, fetch failures and zone deaths". When this
+ * `ROADMAP.md` §5 asks for replication health, refusals, fetch failures and zone deaths. When this
  * artifact was first written one of the four was fully reachable, one was reachable in a
  * single degenerate form, and two were not reachable at all. **`platform:diagnostics` has
- * since landed and moved exactly one of them**, which is fewer than §6b predicted and is
+ * since landed and moved exactly one of them**, which is fewer than was predicted and is
  * the honest count; the sections below say which, and the two that did not move are still
  * in `limits()` with reasons that had to be *rewritten* rather than merely kept. That is
  * the thing the original design did not anticipate: a port can make a category reachable
@@ -32,7 +32,7 @@
  * replication deficit. A numerator that needs the network and a denominator that
  * does not is the whole mechanism, and it is first-person and exact — `local()`.
  *
- * `fleet()` is the second half and it is the one §6b actually asks for. Every
+ * `fleet()` is the second half and it is the one an operator actually asks for. Every
  * device beats its own census into the feed, so an operator reading the feed sees
  * each member's *own* account of how much of the network it can reach. "With no
  * central log, how would the team learn replication is failing for 10% of
@@ -79,7 +79,7 @@
  * artifact at boot" would be a number with two meanings.
  *
  * **3. Fetch failures — still none, and the port makes the reason *worse* rather than
- * better.** The failure §6b has in mind is `bootNetwork`'s `source.fetch` throwing
+ * better.** The failure in question is `bootNetwork`'s `source.fetch` throwing
  * `Unavailable` — a release that could not be found — and `journal.js` exists partly to
  * record which artifact a fetch last failed on. It does record it. Nobody in a realm is
  * left to read it: `source.fetch` has exactly one call site in the kernel, it is inside
@@ -104,7 +104,7 @@
  * empty category is how a monitor comes to look more capable than it is, so the
  * port is absent and `limits()` says why.
  *
- * **4. Zone deaths — reachable, and this is the one §6b's port actually closes.** It is
+ * **4. Zone deaths — reachable, and this is the one the port actually closes.** It is
  * also the one where this file's original text was wrong about the kernel, which is worth
  * stating plainly rather than quietly editing. The claim was that "nothing in `lib/` has
  * ever subscribed" to `Zones.deaths`, quoting `journal.js`'s header — and `journal.js`'s
@@ -122,23 +122,23 @@
  *
  * Two qualifications belong with the number rather than in a footnote, and both are in the
  * declaration a caller reads. `zone: 0` on a device with containment switched off means
- * there are no zones rather than no deaths — §4b records that resource isolation is off by
- * default — and the count is device-wide, so a death in another network this device has
+ * there are no zones rather than no deaths — `ROADMAP.md` §2 records that resource
+ * isolation is detection rather than enforcement, and off by default — and the count is device-wide, so a death in another network this device has
  * joined is in it. Neither is a reason to withhold the number; both are reasons it travels
  * with `observed` and with the scope sentence.
  *
- * **The kernel change §6b said would close 2, 3 and 4 closed one of them**, and the
+ * **The kernel change that was said to close 2, 3 and 4 closed one of them**, and the
  * arithmetic is worth keeping because it is the kind of prediction a roadmap gets wrong
  * cheaply. The port is `platform:diagnostics@1`, it is read-only, it answers counts per
- * kind, and it carries none of the journal's free text — every design constraint §6b named
- * held. What §6b did not check is whether a *kind* is a *category*. It is not: the kernel's
+ * kind, and it carries none of the journal's free text — every design constraint named for
+ * it held. What was not checked is whether a *kind* is a *category*. It is not: the kernel's
  * six kinds were chosen for a terminal, so the port can answer zone deaths exactly, can
  * answer refusals only mixed with four other things, and cannot answer fetch failures at
  * all because the failure kills the reader. A port onto a journal cannot expose what the
  * journal does not separate, and it cannot expose to a realm what the process died before
  * reaching.
  *
- * `ponytail:` **two of the four things §6b asks for are still not observed, and this is
+ * `ponytail:` **two of `ROADMAP.md` §5's four categories are still not observed, and this is
  * the ceiling that says so in one place.** It was three, and `platform:diagnostics` closed
  * zone deaths. What is left is not a missing port: it is that `journal.js`'s `kind` is one
  * name for several categories (a refusal and a moved pin are both `network`; a rollback
@@ -156,7 +156,7 @@
  *
  * ## Why this is not a side channel, decided rather than hoped
  *
- * `ROADMAP.md` 4f and `THREAT-MODEL.md` §2: one instance per kind means a provider
+ * `ROADMAP.md` §8 and `THREAT-MODEL.md` §2: one instance per kind means a provider
  * bound by two consumers is one object serving both, and any state it keeps
  * between calls is a two-way channel between artifacts the realm boundary
  * otherwise keeps strangers. An observability artifact is the exact shape that
@@ -183,7 +183,7 @@
  *      digest, and the fault counters below.
  *
  *   3. **Refusing to accept reports is what costs the coverage.** This is the
- *      honest statement of the trade. The obvious design for §6b is a `diagnostic`
+ *      honest statement of the trade. The obvious design for observability is a `diagnostic`
  *      contract other artifacts bind and report into, which would reach faults
  *      this artifact cannot otherwise see — and it is precisely §2.1's channel,
  *      with every artifact on the device wired to one stateful provider. So the
@@ -675,7 +675,7 @@ module.exports = {
       /**
        * Every member's own account of what it can reach.
        *
-       * This is §6b's question answered. A member reporting `reach: 2, roster: 20`
+       * This is §5's question answered. A member reporting `reach: 2, roster: 20`
        * is telling the network about its own partial failure, and that report
        * arrives as long as it can reach anybody at all. `worst` is the one number
        * to alert on.
@@ -683,7 +683,7 @@ module.exports = {
        * `rosterDiffers` is the reading that is not about replication and is worth
        * having anyway: two members folding the same signed log count the same
        * number of members, so a disagreement means one of them is acting on state
-       * it has not re-read. `ROADMAP.md` Phase 5 registers exactly that as a
+       * it has not re-read. `lib/resident.js`'s own ceiling registers exactly that as a
        * property of the resident process — "a resident device stops re-reading its
        * logs" for up to five minutes, so an expulsion or a raised pin arrives only
        * at the next boot — and calls it a security property rather than a

@@ -112,7 +112,7 @@ function network (devices) {
      *
      *   `diagnostics` is the odd one and is *additive* rather than a swap: the fixture
      *   builds with the port **absent** by default, because absent is the state every
-     *   device was in before ROADMAP §6b and is the state `limits()` has to keep being
+     *   device was in before the port existed and is the state `limits()` has to keep being
      *   honest in. A case that wants the port supplies one.
      */
     device (me, override = {}) {
@@ -273,7 +273,7 @@ test('the roster is the denominator, so an unreplicated member cannot vanish fro
   assert.equal(l.silent[0], 'dev-b', 'and the member that vanished is named')
 })
 
-/* ──────────────── the §6b question: 10% of consumers, from their own beats ───── */
+/* ───────── the operator's question: 10% of consumers, from their own beats ───── */
 
 test('a member reporting partial reach is visible to an operator who can still hear it', async () => {
   const net = network(['dev-op', 'dev-1', 'dev-2', 'dev-3'])
@@ -323,7 +323,7 @@ test('a member that reaches nobody is silent, and is reported as silent rather t
   assert.equal(partition.observed, 'none')
 })
 
-test('a peer folding a different roster is reported, which is Phase 5 staleness seen from outside', async () => {
+test('a peer folding a different roster is reported, which is resident staleness seen from outside', async () => {
   const net = network(['dev-a', 'dev-b'])
 
   // dev-b beat while the roster named two. Then the roster grows — an admin

@@ -1,7 +1,7 @@
 # artifact-health
 
 What a device can see of its network's replication, reported through the network's
-own feed. `ROADMAP.md` §6b: observability is an artifact, not kernel code.
+own feed. Observability is an artifact, not kernel code.
 
 There is no endpoint and nothing phones home. A beat is an entry in this artifact's
 `platform:feed`, so it reaches an operator the way every other entry does — by their
@@ -10,21 +10,21 @@ nothing from this repo existing.
 
 ## What it observes, and what it cannot
 
-§6b names four things. **Two are reachable, and two are not** — so `limits()` returns
+`ROADMAP.md` §5 names four things. **Two are reachable, and two are not** — so `limits()` returns
 the blind spots as data. A dashboard that renders a zero nobody measured is worse than
 one that renders nothing, which is the whole reason that operation is part of the
 contract rather than a paragraph here.
 
-| §6b asks for | Observed | How, or why not |
+| §5 asks for | Observed | How, or why not |
 |---|---|---|
 | replication health | **fully** | the signed roster is a denominator that needs no peer; `entries()` is a numerator that does. Their difference is a replication deficit |
 | zone deaths | **fully, on this device** | `platform:diagnostics` counts them. The kernel writes a death under kind `zone`, that kind has exactly one writer, so the count is the count. Not in a beat — see below |
 | refusals | partial | the same port counts them under `network`, together with moved pins, expired settles and unresolved invites, so no number here is a refusal count. And a refusal is what stopped an artifact being built, so the artifact that would report it may be the one refused |
 | fetch failures | none | the one call site that fetches throws uncaught and tears the device down before any artifact runs, so the note is written to a ring nobody is left to read. Worse: the `fetch` count a *running* device shows is fetches that succeeded — one of them being a rollback refused, which is a defence engaging |
 
-§6b said one kernel change would close the last three. It closed **one**, and the
-arithmetic is the interesting part: `platform:diagnostics` met every constraint §6b
-named — read-only, counts per kind, not one character of the journal's text — and it
+One kernel change was said to close the last three. It closed **one**, and the
+arithmetic is the interesting part: `platform:diagnostics` met every constraint named
+for it — read-only, counts per kind, not one character of the journal's text — and it
 still cannot separate a refusal from a moved pin, because the kernel's six journal
 *kinds* were chosen for a person reading a terminal and a kind is not a category. A port
 onto a journal cannot expose what the journal does not separate, nor expose to a realm
@@ -45,7 +45,7 @@ shape that becomes a channel by accident. This one is bindable twice for real
 `beat()` is a pure read, `beat()` takes no argument, `handle()` refuses every action,
 and the one thing kept in the store is a digest of a census computed from inputs both
 consumers can already read. **Refusing to accept reports from other artifacts is what
-costs the coverage above** — the obvious design for §6b is a mailbox every artifact
+costs the coverage above** — the obvious design for observability is a mailbox every artifact
 writes into, and that is the channel.
 
 **No free text reaches the feed.** A feed is append-only, replicates to every member,
