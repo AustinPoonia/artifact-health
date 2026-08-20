@@ -59,8 +59,31 @@ const test = (/** @type {string} */ n, /** @type {any} */ f) => cases.push([n, f
 function network (devices) {
   /** @type {Map<string, Entry[]>} */
   const logs = new Map(devices.map((d) => [d, []]))
-  /** Who each device can currently read from. Everybody, until a case cuts it. */
-  const reach = new Map(devices.map((d) => [d, new Set(devices)]))
+  /**
+   * How much of each device's log each device can currently read.
+   *
+   * A *frontier* per pair and not a set of reachable peers, and the difference is
+   * the whole of what this suite was unable to fail before. A `Set` that
+   * `partition` deleted from made a cut retroactive: everything the cut device had
+   * already replicated vanished from the other's `entries()`, so a partition looked
+   * exactly like a member that had never existed. Replication does not work that
+   * way. A block that has arrived is on disk and stays there — `platform:feed`
+   * merges "the feeds of the members this device can currently reach", and what it
+   * already holds from a member it holds whether or not that member is reachable
+   * now.
+   *
+   * So a cut freezes a frontier at the log length it had reached, and the entries
+   * behind it stay visible forever. That is what lets a case stage the deficit that
+   * opens *after* first contact, which is the one this artifact could not see and
+   * this suite could not stage: with a `Set`, `reached` fell to zero on the cut and
+   * every assertion about a monotone `reached` passed for the wrong reason.
+   *
+   * `Infinity` is "everything this device ever writes", which is every pair until a
+   * case cuts one.
+   *
+   * @type {Map<string, Map<string, number>>}
+   */
+  const reach = new Map(devices.map((d) => [d, new Map(devices.map((o) => [o, Infinity]))]))
   /** The roster every device folds. Signed state, so it needs no reachability. */
   let roster = devices.slice()
   let clock = 1000
@@ -78,10 +101,17 @@ function network (devices) {
 
   return {
     logs,
-    /** Stop `a` from seeing `b`'s log. One direction, because real partitions are. */
+    /**
+     * Stop `a` from seeing anything `b` writes *from now on*. One direction,
+     * because real partitions are, and not retroactive, because real ones are not.
+     *
+     * `a` keeps every block of `b`'s it had already replicated. A case that wants
+     * `b` to have been never heard from cuts before `b` writes anything, which
+     * freezes the frontier at zero and is the genuinely-unreachable member.
+     */
     partition (/** @type {string} */ a, /** @type {string} */ b) {
       const s = reach.get(a)
-      if (s) s.delete(b)
+      if (s) s.set(b, (logs.get(b) || []).length)
     },
     /** Replace the signed roster, for the case where two devices fold different logs. */
     setRoster (/** @type {string[]} */ next) { roster = next.slice() },
@@ -135,12 +165,18 @@ function network (devices) {
           return seq
         },
         entries: async () => {
-          const visible = reach.get(me) || new Set()
+          const visible = reach.get(me) || new Map()
           /** @type {Entry[]} */
           const out = []
           for (const [device, log] of logs) {
-            if (!visible.has(device)) continue
-            for (const e of log) out.push({ ...e })
+            // A device this network never named is not reachable at all; one that is
+            // named is readable up to its frontier, which is every block until a case
+            // cuts the pair and everything it had already replicated afterwards.
+            const frontier = visible.has(device) ? Number(visible.get(device)) : 0
+            for (const e of log) {
+              if (e.seq >= frontier) break
+              out.push({ ...e })
+            }
           }
           return out.sort((a, b) => a.seq - b.seq || a.device.localeCompare(b.device))
         },
@@ -239,11 +275,14 @@ test('a healthy network reports full reach and is not degraded', async () => {
 
 test('a member this device cannot replicate with is named, not merely counted', async () => {
   const net = network(['dev-a', 'dev-b', 'dev-c'])
-  await settle(net, ['dev-a', 'dev-b', 'dev-c'])
 
-  // The fault. `dev-a` can no longer read `dev-c`'s log, which is exactly what a
-  // replication failure looks like through this port: absent, not empty.
+  // The fault, and it is cut **before** anything replicates rather than after. This
+  // case is about the member `silent` is for — one this device has never held a byte
+  // from — and cutting after a settle stages a different fault entirely, the one
+  // `limits()` now has a row for and `age` answers. Cutting after used to produce
+  // these numbers only because the fixture's partition was retroactive.
   net.partition('dev-a', 'dev-c')
+  await settle(net, ['dev-a', 'dev-b', 'dev-c'])
 
   const l = await net.device('dev-a').local()
   assert.equal(l.roster, 3, 'the roster is signed state and did not shrink')
@@ -260,8 +299,9 @@ test('a member this device cannot replicate with is named, not merely counted', 
 
 test('the roster is the denominator, so an unreplicated member cannot vanish from it', async () => {
   const net = network(['dev-a', 'dev-b'])
-  await settle(net, ['dev-a', 'dev-b'])
+  // Cut first, so dev-b is a member dev-a has genuinely never held anything from.
   net.partition('dev-a', 'dev-b')
+  await settle(net, ['dev-a', 'dev-b'])
 
   const l = await net.device('dev-a').local()
   // The failure this guards: computing the roster from whoever answered would
@@ -303,11 +343,15 @@ test('a member reporting partial reach is visible to an operator who can still h
 
 test('a member that reaches nobody is silent, and is reported as silent rather than as healthy', async () => {
   const net = network(['dev-op', 'dev-1', 'dev-lost'])
-  await settle(net, ['dev-op', 'dev-1', 'dev-lost'])
 
-  // Total partition, both directions. This is the limit `limits()` declares.
+  // Total partition, both directions, and from the start. `fleet().silent` is the
+  // list of members that have *never* reported here, so the member it describes is
+  // one that was unreachable before it ever wrote. A member cut after it had beaten
+  // once stays in `members` forever with a beat that stops advancing — which is a
+  // different reading, and is `age`'s.
   net.partition('dev-op', 'dev-lost')
   net.partition('dev-1', 'dev-lost')
+  await settle(net, ['dev-op', 'dev-1', 'dev-lost'])
 
   const f = await net.device('dev-op').fleet()
   assert.equal(f.silent.length, 1, 'one member has reported nothing')
@@ -515,14 +559,28 @@ test('a census that changed is appended, so suppression cannot hide a new fault'
   if (log === undefined) assert.fail('dev-a has a log')
   const wasAt = log.length
 
-  // The change: dev-b stops replicating to dev-a. The census now differs, so the
-  // suppression must not apply — this is the case that would turn the bound into
-  // a device that went quiet exactly when it had something to say.
+  // **A partition is not the trigger, and this case used to claim it was.** It cut
+  // dev-b off and asserted a beat, and it passed only because the fixture's
+  // partition was retroactive: dev-b's entry disappeared, `reach` fell from 2 to 1,
+  // and the digest moved. Over a real link the block dev-a already holds stays on
+  // disk, `reach` stays 2, and the digest does not move — so the cut writes nothing
+  // at all. That is finding 4 as a case rather than as a paragraph, and asserting it
+  // is how the suite stops being able to lie about it again.
   net.partition('dev-a', 'dev-b')
+  const cut = await a.beat()
+  assert.strictEqual(cut.wrote, false, 'a partition after first contact does not move the digest')
+  assert.strictEqual(cut.reach, 2, 'because a block that has replicated is still held')
+  assert.strictEqual(log.length, wasAt, 'so the feed did not grow')
+
+  // What does move it: the roster growing under this device. The census now differs,
+  // so the suppression must not apply — this is the case that would turn the bound
+  // into a device that went quiet exactly when it had something to say.
+  net.setRoster(['dev-a', 'dev-b', 'dev-new'])
   const next = await a.beat()
-  assert.equal(next.wrote, true, 'a changed census is written')
-  assert.equal(log.length, wasAt + 1, 'and the feed grew by exactly one')
-  assert.equal(next.reach, 1, 'reporting the reduced reach')
+  assert.strictEqual(next.wrote, true, 'a changed census is written')
+  assert.strictEqual(log.length, wasAt + 1, 'and the feed grew by exactly one')
+  assert.strictEqual(next.roster, 3, 'reporting the roster it now folds')
+  assert.strictEqual(next.reach, 2, 'and the reach it actually has')
 })
 
 test('a store that cannot be read degrades to beating rather than to silence', async () => {
@@ -628,6 +686,34 @@ test('limits names every one of the four things an operator will ask about', () 
     if (row === undefined) assert.fail(`${subject} is a declared blind spot and must be in limits()`)
     assert.ok(['none', 'partial'].includes(row.observed), 'observed is none or partial, never a claim of coverage')
     assert.ok(row.because.length > 0, 'and it says why')
+    assert.ok(row.covered.length > 0, 'and where the fact does exist')
+  }
+})
+
+test('limits declares that first contact is permanent, on a device with no port and on one with', async () => {
+  // The row this artifact owes about *itself* rather than about the platform, so it must
+  // be there whatever is bound. The case drives the failure rather than reading the list
+  // cold: two devices settle, the link is cut, and the reading keeps saying everything is
+  // fine — which is true to the declaration of `reached` and is not the question an
+  // operator asked. The row is what makes the difference legible.
+  const net = network(['dev-a', 'dev-b'])
+  await settle(net, ['dev-a', 'dev-b'])
+  net.partition('dev-a', 'dev-b')
+  // dev-b keeps writing, and dev-a cannot see any of it.
+  net.push('dev-b', { type: 'beat', reach: 2, roster: 2, faults: [] })
+  net.push('dev-b', { type: 'beat', reach: 1, roster: 2, faults: [] })
+
+  const a = net.device('dev-a')
+  const before = await a.local()
+  assert.strictEqual(before.degraded, false, 'the reading this row exists to qualify: nothing looks wrong')
+  assert.strictEqual(before.silent.length, 0, 'and nobody is silent, because dev-b was heard from once')
+
+  for (const rows of [a.limits(), net.device('dev-a', { diagnostics: journal(QUIET) }).limits()]) {
+    const row = rows.find((x) => /after this device first heard from it/.test(x.subject))
+    if (row === undefined) assert.fail(`no first-contact row in ${JSON.stringify(rows.map((x) => x.subject))}`)
+    assert.strictEqual(row.observed, 'partial')
+    assert.ok(/stays on disk|permanent/.test(row.because),
+      'the reason has to name the mechanism, or a reader cannot tell it from a transient')
     assert.ok(row.covered.length > 0, 'and where the fact does exist')
   }
 })

@@ -932,6 +932,37 @@ module.exports = {
                 'to read, and the fetch count on a device you can ask is zero because this device came up, ' +
                 'not because nothing ever failed',
             covered: 'the device\'s own journal, for whoever is standing at the machine'
+          },
+          /**
+           * The blind spot that is this reading's own and not the platform's, which is
+           * why it is unconditional and why no port will ever drop it.
+           *
+           * `reaches()` asks whether this device holds *at least one* entry from a
+           * member, and a replicated block is on disk forever. So the predicate is
+           * monotone: a member counted as reached once can never be counted silent
+           * again, however long ago the one entry arrived and however far behind its log
+           * has since fallen. Measured over a real link held down for 95 seconds, a peer
+           * stayed three, then six, then thirteen blocks behind while `reached` sat at
+           * 2 of 2, `silent` stayed empty and `degraded` stayed false.
+           *
+           * The fields are not lying — `shape.js` declares `reached` as "members this
+           * device holds at least one entry from", and that is exactly what it counts.
+           * The gap is that an operator does not ask that question. They ask "am I
+           * falling behind on anybody", and until this release there was no field for it
+           * and no row here saying so, which is the failure mode this whole operation
+           * exists to prevent: not a wrong number, an unasked question rendered as a
+           * healthy one.
+           */
+          {
+            subject: 'a member that stopped replicating after this device first heard from it',
+            observed: 'partial',
+            because:
+              'reached, silent and degraded are computed from whether anything has ever arrived from a ' +
+              'member, and a block that has replicated stays on disk — so first contact is permanent and a ' +
+              'deficit that opens after it moves none of the three',
+            covered:
+              'the seq on each row of local().peers, which a caller holding an earlier reading can compare ' +
+              'against a later one'
           }
         ]
 
