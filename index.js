@@ -485,7 +485,7 @@ module.exports = {
     async function held () {
       const entries = await attempt(() => deps.feed.entries(), 'feed-unreachable', /** @type {any[]} */ ([]))
 
-      /** @type {Map<string, { seq: number, beats: number, beat: any }>} */
+      /** @type {Map<string, { seq: number, beats: number, beat: any, at: number }>} */
       const byDevice = new Map()
       if (!Array.isArray(entries)) return byDevice
 
@@ -497,7 +497,7 @@ module.exports = {
         let row = byDevice.get(device)
         if (!row) {
           if (byDevice.size >= settings.maxMembers) continue
-          row = { seq: -1, beats: 0, beat: null }
+          row = { seq: -1, beats: 0, beat: null, at: 0 }
           byDevice.set(device, row)
         }
 
@@ -513,6 +513,20 @@ module.exports = {
         // which is the writer's clock and which the feed's declaration says
         // never to sort on.
         row.beat = v
+        // **Off the entry, never off the value, and that was the whole bug.** `at` was
+        // read as `row.beat.at` — a field on the census — and `census()` has never put
+        // one there and must not: a census is what the digest is taken over, and a
+        // timestamp inside it would move on every tick and write a beat every tick. So
+        // `Number(undefined)` was `NaN`, the finite-guard wrote 0, and every row of
+        // `fleet().members` carried `at: 0` on every device for a whole release.
+        //
+        // `platform:feed` has carried the field the whole time, one level out: `append`
+        // writes `{ at: peer.now(), value }` and `merge` returns it as `entry.at`. That
+        // is the writer's own clock, unchecked, exactly as declared — so it is reported
+        // as the hint it is and is never compared against this device's clock. The
+        // currency reading below is what does not use it, for that reason.
+        const at = Number(entry.at)
+        row.at = Number.isFinite(at) && at >= 0 ? at : 0
       }
 
       return byDevice
@@ -736,7 +750,7 @@ module.exports = {
             reach: Number.isFinite(reach) ? reach : 0,
             roster: Number.isFinite(theirRoster) ? theirRoster : 0,
             faults: Array.isArray(row.beat.faults) ? row.beat.faults.length : 0,
-            at: Number.isFinite(Number(row.beat.at)) ? Number(row.beat.at) : 0,
+            at: row.at,
             // Only meaningful when this device has a roster of its own. With no
             // denominator every member would "differ", which is a fleet of false
             // positives caused by this device's own fault.

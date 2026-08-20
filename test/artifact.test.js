@@ -161,7 +161,13 @@ function network (devices) {
           const log = logs.get(me)
           if (!log) throw new Error(`no such device ${me}`)
           const seq = log.length
-          log.push({ device: me, seq, at: clock++, value: { ...value, at: clock } })
+          // `at` on the **entry** and never inside the value, because that is where
+          // `platform:feed` puts it: `append` writes `{ at: peer.now(), value }` and
+          // `merge` hands back `{ device, seq, at, value }`. This line used to spread
+          // `at` into the value as well, which no substrate does, and it is why
+          // `fleet().members[].at` was structurally zero for a whole release without a
+          // case noticing — the fixture manufactured the one field the bug ate.
+          log.push({ device: me, seq, at: clock++, value: { ...value } })
           return seq
         },
         entries: async () => {
@@ -365,6 +371,36 @@ test('a member that reaches nobody is silent, and is reported as silent rather t
   const partition = limits.find((x) => x.subject === 'total partition')
   if (partition === undefined) assert.fail('total partition is a declared limit')
   assert.equal(partition.observed, 'none')
+})
+
+test('a fleet row carries the writer\'s own clock, which the substrate puts on the entry', async () => {
+  // The field was declared for a whole release and was structurally 0 on every row of
+  // every device, because it was read off the census and no census has ever had one.
+  // The suite could not see it: the fixture's `append` spread an `at` into the value,
+  // which `platform:feed` does not do, so the bug was fed the field it eats.
+  //
+  // Nothing here injects anything. The clock comes off the entry, where `merge` puts
+  // it, and the only thing asserted about its *value* is that it is a real writer's
+  // clock — this device never compares it against its own, and neither should a caller.
+  const net = network(['dev-a', 'dev-b'])
+  await settle(net, ['dev-a', 'dev-b'])
+
+  const f = await net.device('dev-a').fleet()
+  assert.strictEqual(f.members.length, 2, 'both members reported')
+  for (const m of f.members) {
+    assert.ok(Number.isFinite(m.at), `${m.device} reported a non-finite clock`)
+    assert.ok(m.at > 0, `${m.device} reported at: ${m.at}, which is the structural zero this fixes`)
+  }
+
+  // And it is the clock of the entry that carried that member's newest beat, rather
+  // than any other entry's. Read straight out of the fixture's logs, so the assertion
+  // compares the reading against the substrate and not against itself.
+  for (const m of f.members) {
+    const log = net.logs.get(m.device)
+    if (log === undefined) assert.fail(`${m.device} has a log`)
+    const last = log[log.length - 1]
+    assert.strictEqual(m.at, last.at, `${m.device}'s row is not its newest entry's clock`)
+  }
 })
 
 test('a peer folding a different roster is reported, which is resident staleness seen from outside', async () => {
