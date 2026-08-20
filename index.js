@@ -309,6 +309,18 @@
  * The reading built on it never compares two devices' clocks. `entry.at` is the
  * writer's own and `platform:feed` says never to trust it; `age` is this device's
  * clock since this device watched that member's log get longer. See `advanced`.
+ *
+ * `ponytail:` **the bound on the feed is now a rate rather than a total, and nothing
+ * here collects.** One entry per member per floor per day is a number that grows for as
+ * long as the network exists, and a log that only ever grows will eventually be the
+ * largest thing on a small device. Content-addressed suppression had the same property
+ * whenever anything was actually changing; what the floor does is put a lower bound under
+ * it on a quiet network, which is the price of the reading and is not a new *kind* of
+ * problem. It becomes one at a fleet size and an uptime nothing here has measured. The
+ * upgrade path is not in this artifact — a beat is an entry in `platform:feed`, and
+ * whether an artifact's log can be truncated behind a horizon is that capability's
+ * question and the network's, not a monitor's. A `history` operation in here would be the
+ * wrong answer to it twice over, which is why there still is not one.
  */
 const shape = require('./lib/shape')
 const { CODES, classify, safe } = require('./lib/codes')
@@ -366,6 +378,18 @@ const KIND = /^[a-z][a-z0-9-]{0,31}$/
  * `cli@2.0.0` is how an artifact reaches it — the OS adapters port `cli` at `many`, so
  * `artifact run health -- beat` exists the moment this is declared and an instance is
  * signed.
+ *
+ * `ponytail:` **a command line is a person or a cron, and neither is a fleet.** What this
+ * declaration buys is that a beat is *possible* on a device. What it does not buy is that
+ * one happens on a clock, because no surface on this platform lets an artifact schedule
+ * anything — the four ways its code runs are the four above and none of them is a timer.
+ * So the fleet reading is only as complete as whatever runs `artifact run health -- beat`
+ * on each machine, which today is that machine's own scheduler and not the network's, and
+ * every currency reading inherits it: `age` is measured against observations made at
+ * beats, so a device nobody beats has ages whose resolution is however often somebody
+ * typed the command. The upgrade path is a kernel-side periodic call — `lib/resident.js`
+ * already ticks — and it is a decision about whether an artifact may run code nobody
+ * asked for. Not this repo's to take, and worse taken by quietly adding a timer in here.
  *
  * ## Two commands, and why the grammar is written rather than derived
  *
