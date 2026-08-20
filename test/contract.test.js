@@ -225,8 +225,8 @@ test('every contract it provides is one it or a dependency declares', () => {
   // `health` moves with this artifact and `view` does not: `view` is `artifact-ui`'s
   // contract, so its version is a fact about that repo's declaration and pinning it to
   // this artifact's own number would be claiming to have published somebody else's.
-  assert.equal(provides.join(' '), 'health@1.3.0 view@1.1.0',
-    'the contract it authors, and the panel vocabulary it renders into')
+  assert.equal(provides.join(' '), 'cli@2.0.0 health@1.3.0 view@1.1.0',
+    'the contract it authors, the panel vocabulary it renders into, and the command line a device runs it from')
 
   // The version it provides is the version it declares. Two numbers for one contract in
   // one manifest is a document the kernel resolves one half of, and both the `1.1.0` and
@@ -238,10 +238,37 @@ test('every contract it provides is one it or a dependency declares', () => {
     declared[0].version,
     'the kind provides a version of health that this manifest does not declare')
 
-  // `view` is artifact-ui's, which is why ui is in deps. Providing a contract no
-  // manifest in the graph declares is a plan fault, and one this repo can catch.
+  // `view` is artifact-ui's and `cli` is artifact-cli's, which is why both are in deps.
+  // Providing a contract no manifest in the graph declares is a plan fault, and one this
+  // repo can catch before an operator meets it as a refusal at `instance create`.
   const deps = manifest.deps.map((/** @type {any} */ d) => d.name)
   assert.ok(deps.includes('ui'), 'view@1.1.0 is declared by artifact-ui, so ui is a dep')
+  assert.ok(deps.includes('cli'), 'cli@2.0.0 is declared by artifact-cli, so cli is a dep')
+})
+
+test('the command line the manifest promises is the one the module answers', () => {
+  // The reason this artifact provides `cli` at all: for three releases nothing on a
+  // device could run it. It was a `file:` dependency of the kernel's repo so two suites
+  // could reach it and a row in an operator's lockfile, and neither of those is a device.
+  // `view` arrives on a shell the day an instance is signed, but a panel is a read — and
+  // the one operation that has to happen before any reading has anything to read is
+  // `beat()`, which writes, and which nothing on this platform calls. There is no
+  // scheduler surface; a command line is the one way in an artifact can declare for
+  // itself.
+  //
+  // Compared against the manifest rather than against a literal, because the version in
+  // the spec is what a person sees under `artifact run health --help` and a spec that
+  // drifted from the document the kernel verifies is two answers to one question.
+  const kind = manifest.kinds.find((/** @type {any} */ k) => k.key === 'health')
+  const provided = kind.provides.find((/** @type {any} */ p) => p.id === 'cli')
+  assert.ok(provided, 'the kind provides cli, or no adapter will ever ask it for a grammar')
+
+  const spec = health.SPEC
+  assert.equal(spec.name, manifest.name, 'the command is named for the artifact')
+  assert.equal(spec.version, manifest.version, 'and carries this release\'s version, not the contract\'s')
+
+  const actions = spec.commands.map((/** @type {any} */ c) => c.action).sort()
+  assert.equal(new Set(actions).size, actions.length, 'two commands dispatch to one action')
 })
 
 test('the config schema declares only the bound, so nothing configurable can widen what is reported', () => {

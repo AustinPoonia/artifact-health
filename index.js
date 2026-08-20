@@ -344,6 +344,66 @@ const { CODES, classify, safe } = require('./lib/codes')
  */
 const KIND = /^[a-z][a-z0-9-]{0,31}$/
 
+/**
+ * This artifact's command line, and the reason it needs one at all.
+ *
+ * **Nothing ran this.** For three releases `health` was a correctly shaped library that
+ * no device executed: it is a `file:` dependency of the kernel's repo so two suites can
+ * reach it, and a row in an operator's lockfile, and that is the whole of its presence
+ * anywhere. `lib/` mentions it in comments. A monitor nobody runs is not a monitor, and
+ * every argument in this file about what is and is not observable was academic until a
+ * device could be asked.
+ *
+ * The gap was not the manifest and not a plan. It was that this artifact provided
+ * `health` and `view` and nothing else, and neither of those is a way in. `view` is
+ * rendered by a shell that ports `view` at cardinality `many` — real, and it arrives
+ * automatically the day an instance is signed — but a panel is a *read*, and the one
+ * operation here that has to happen for any of the readings to have anything to read is
+ * `beat()`, which writes. Nothing on this platform calls it. There is no scheduler
+ * surface: an artifact's code runs when it is built, when a consumer calls one of its
+ * contract operations, when a shell renders its panel, or when somebody types a command.
+ * Of those four, the last is the only one this artifact could reach on its own, and
+ * `cli@2.0.0` is how an artifact reaches it — the OS adapters port `cli` at `many`, so
+ * `artifact run health -- beat` exists the moment this is declared and an instance is
+ * signed.
+ *
+ * ## Two commands, and why the grammar is written rather than derived
+ *
+ * `artifact-send` derives its grammar from its contract, and the reason is arithmetic: it
+ * surfaces five of eight operations with positional arguments and flags, so a hand-written
+ * copy would be one description in two vocabularies, free to drift. Neither half of that
+ * holds here. There are two commands, neither takes an argument or a flag — `beat()` takes
+ * none by design, and the redaction argument is why — and one of the two is not an
+ * operation of the `health` contract at all: `report` renders the `view@1.1.0` panel,
+ * which is a different contract. A derivation with two entries and an exception is a
+ * mechanism with nothing to keep in step.
+ *
+ * There is no `local`, no `fleet` and no `limits` verb, and that is `report` doing its
+ * job: the panel already renders all three, together, with the blind spots underneath
+ * them, and it is the whole point of this artifact that a number arrives next to what
+ * qualifies it. Three verbs that each printed one number without the others would be
+ * three ways to read a fragment.
+ */
+const SPEC = {
+  name: 'health',
+  version: '1.3.0',
+  describe: 'What this device can see of the network\'s replication, and what it cannot',
+  commands: [
+    {
+      name: 'report',
+      action: 'cliReport',
+      describe: 'What this device holds from each member, what every member says it holds, and the blind spots in both'
+    },
+    {
+      name: 'beat',
+      action: 'cliBeat',
+      // The sentence a person needs at the moment they are about to type it, which is
+      // that this writes to a log every member reads and that repeating it is cheap.
+      describe: 'Append one census of what this device can currently see. Suppressed when it matches the last one and that one is recent'
+    }
+  ]
+}
+
 /** Where a name that cannot be a kind is counted. One row, however many arrive. */
 const UNNAMED = 'unnamed'
 
@@ -1510,6 +1570,77 @@ module.exports = {
       },
 
       /**
+       * This artifact's command-line description.
+       *
+       * A fresh copy per call, for the reason `artifact-docs` gives: the spec crosses a
+       * realm boundary as JSON in production, so nothing outside could mutate the
+       * constant — but this is also called in-process by a suite, and a shared object a
+       * caller normalizes in place is a bug that appears only there.
+       */
+      cli () {
+        return JSON.parse(JSON.stringify(SPEC))
+      },
+
+      /**
+       * The panel, as a command line answers it.
+       *
+       * `view()` and not a second rendering. The panel is where the numbers already
+       * arrive next to what qualifies them, and an operator standing at a machine wants
+       * the same reading a shell shows rather than a terser one that dropped the
+       * `limits()` block — which is the block this whole artifact exists for and the
+       * first thing a second rendering would leave out to save four lines.
+       *
+       * The title is dropped and only the title: `cli@2` actions answer `{ nodes }`, and
+       * the adapter frames them under the command's own name.
+       */
+      async cliReport () {
+        const { nodes } = await this.view()
+        return { nodes }
+      },
+
+      /**
+       * Write one beat, and say plainly which of the three things happened.
+       *
+       * The suppressed case is not a failure and must not read as one. A device that
+       * beat five minutes ago with the same census has nothing to add, and a person who
+       * typed this twice should be told that rather than left wondering whether it
+       * worked — so it is `muted` and it says why, and the refused case is `danger`.
+       *
+       * No argument, because `beat()` has none. That is the redaction decision one layer
+       * out arriving at a command line intact: there is no note to attach here because
+       * there is no note this artifact would put in an append-only log that replicates to
+       * every member and cannot be edited afterwards.
+       */
+      async cliBeat () {
+        const result = await this.beat()
+
+        if (result.wrote) {
+          return {
+            nodes: [{
+              type: 'text',
+              text: `Wrote a beat at sequence ${result.seq}: ${result.reach} of ${result.roster} members reached.`,
+              tone: 'success'
+            }]
+          }
+        }
+
+        // Told apart by the fault register rather than by a second return field. A
+        // refusal is counted the moment it happens, so the count is already the record,
+        // and adding a `why` to `beat()`'s answer to serve one command line would put a
+        // string in a contract to save a lookup in here.
+        const refused = this.faults().some((f) => f.code === 'append-refused')
+        return {
+          nodes: [{
+            type: 'text',
+            text: refused
+              ? 'The feed refused the append, so this device did not report. It is still reachable to whoever is standing at it.'
+              : `Nothing written: ${result.reach} of ${result.roster} reached, unchanged since the last beat and recent enough that repeating it would say nothing.`,
+            tone: refused ? 'danger' : 'muted'
+          }]
+        }
+      },
+
+      /**
        * The vocabulary and the contract, for a suite and for a reader.
        *
        * Not on the declared shape: it is a fact about this build rather than a
@@ -1533,5 +1664,16 @@ module.exports = {
    * the suite asserting that two files it chose agree, rather than that the thing
    * the artifact actually carries agrees with the document the kernel reads.
    */
-  shape
+  shape,
+
+  /**
+   * The command line, re-exported for the same reason and with the same limit.
+   *
+   * `test/contract.test.js` checks the name and the version against `manifest.json`,
+   * because a spec that drifted from the document the kernel verifies is two answers to
+   * one question and the one a person meets is `--help`. Not on the declared shape:
+   * `cli@2.0.0` names one operation, `cli()`, and this is the constant behind it rather
+   * than a promise of its own.
+   */
+  SPEC
 }

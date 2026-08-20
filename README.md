@@ -40,6 +40,51 @@ the reader. That one is read by whoever is standing at the machine.
 a constant. A device that binds the port loses the `zone deaths` and `refusals` rows and
 gains one the port creates: nothing it reports reaches the fleet, deliberately.
 
+## How a device runs it
+
+    artifact run health              # what this device holds, what the fleet reports, and the blind spots
+    artifact run health -- beat      # append one census
+
+For three releases there was no answer to this question. The artifact was a `file:`
+dependency of the kernel's repo so two suites could reach it, and a row in an operator's
+lockfile — and neither of those is a device. It provided `health` and `view`, and while
+`view` really does arrive on a shell the day an instance is signed, a panel is a *read*,
+and the operation every reading depends on is `beat()`, which writes. Nothing on this
+platform calls it: there is no scheduler surface, and an artifact's code runs when it is
+built, when a consumer calls it, when a shell renders its panel, or when somebody types a
+command. So this release provides `cli@2.0.0`, which is the one of the four an artifact
+can declare for itself.
+
+Three things still have to be true and none of them is a code change. The network has to
+have published this artifact; the kind is `instances: "explicit"`, so an admin has to sign
+`instance create <id> health health` — a monitor that appeared wherever it was installed
+would be a device deciding to report on itself, and that decision is the network's; and
+something has to run `beat` on a clock, which on this platform means whatever runs
+periodic commands on that machine. That last one is a real gap and it is not this repo's
+to close.
+
+## Currency, and why the beat expires
+
+`reached` counts the members this device holds at least one entry from, which is what it
+has always said and is monotone: a replicated block stays on disk, so a member counted
+once is counted forever. A member that stops replicating an hour after first contact
+therefore moves nothing — not `reached`, not `silent`, not `degraded`.
+
+`age` is the field for that question: milliseconds on **this device's** clock since this
+device watched that member's log get longer. Not `now - entry.at`, which subtracts
+another device's unchecked clock; `platform:feed` says never to trust that field and this
+does not. `null` means this instance has not watched the log move, which is not zero and
+not a large number.
+
+Making it measurable forced the beat to change. Suppressing on content alone means a
+healthy member writes nothing, so a healthy member and one this device stopped
+replicating with produce identical feeds and no reading can separate them. Putting a
+clock *in* the census would move it and would also remove the suppression, one entry per
+member per tick forever. So the census is unchanged and the suppression expires:
+`beatFloor`, five minutes by default, past which an unchanged census is written again on
+purpose. Set it to zero for the old behaviour, and `limits()` on that device will say
+currency is unanswerable there.
+
 ## The two things worth reading the source for
 
 **It is not a side channel.** `THREAT-MODEL.md` §2 — a provider bound by two
@@ -78,7 +123,7 @@ It runs only where a signed `instance.create` names it (`instances: "explicit"`)
 ## Layout
 
     index.js          the artifact: build(deps) → the health and view contracts
-    lib/shape.js      health@1.2.0's shape, the source manifest.json is generated from
+    lib/shape.js      health@1.3.0's shape, the source manifest.json is generated from
     lib/codes.js      the closed fault vocabulary, and why it is closed
     manifest.json     the document the kernel reads; regenerate with `npm run shape`
 

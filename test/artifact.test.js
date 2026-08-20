@@ -983,6 +983,99 @@ test('the operations a consumer can call twice do not change what the next calle
     'and beating does record it, or the field would never have a value at all')
 })
 
+/* ───────── a device can actually run this, which for three releases it could not ──── */
+
+test('every action the command line names is a method this artifact implements', async () => {
+  // The failure this catches is `artifact-linux`'s EX_SOFTWARE branch: "an app naming an
+  // action it does not implement is the platform's fault to report, not the person's to
+  // have typed". An adapter looks the action up by name on the instance — `deps.apps[
+  // plan.action]` — so a typo here is a command that parses, resolves, and then tells a
+  // person the platform is broken.
+  const net = network(['dev-a'])
+  const a = net.device('dev-a')
+  const spec = a.cli()
+
+  assert.strictEqual(spec.name, 'health', 'the command name is the artifact\'s')
+  assert.ok(spec.commands.length > 0, 'and it offers something')
+  for (const command of spec.commands) {
+    assert.ok(/^[a-z][a-z-]*$/.test(command.name), `${command.name} is not a command a person can type`)
+    assert.ok(command.describe.length > 0, `${command.name} has no help text`)
+    assert.strictEqual(typeof (/** @type {any} */ (a)[command.action]), 'function',
+      `${command.name} dispatches to ${command.action}, which this artifact does not implement`)
+    // `--json` and `--help` are reserved by cli-parser@2, so nothing here may declare
+    // them, and nothing here declares any option at all.
+    assert.strictEqual(command.options, undefined, `${command.name} declares options; this surface takes none`)
+    assert.strictEqual(command.arguments, undefined, `${command.name} takes an argument; beat() has none by design`)
+  }
+
+  // A fresh copy per call, so a caller that normalizes in place cannot poison the next.
+  const once = a.cli()
+  once.commands.length = 0
+  assert.ok(a.cli().commands.length > 0, 'cli() handed out its own constant')
+})
+
+test('every action answers with nodes, which is the whole of what cli@2 changed', async () => {
+  const net = network(['dev-a', 'dev-b'])
+  await settle(net, ['dev-a', 'dev-b'])
+  const a = net.device('dev-a')
+
+  for (const command of a.cli().commands) {
+    const result = await (/** @type {any} */ (a)[command.action])({}, {})
+    assert.ok(Array.isArray(result && result.nodes),
+      `${command.name} answered ${JSON.stringify(result)}, and cli@2 actions answer { nodes }`)
+    assert.strictEqual(result.title, undefined, `${command.name} answered a title; a command line frames its own`)
+    for (const node of result.nodes) {
+      assert.ok(typeof node.type === 'string' && node.type.length > 0, `${command.name} emitted an untyped node`)
+    }
+  }
+})
+
+test('the beat command writes, tells the truth about a suppressed one, and names a refusal', async () => {
+  const net = network(['dev-a'])
+  const log = net.logs.get('dev-a')
+  if (log === undefined) assert.fail('dev-a has a log')
+  const a = net.device('dev-a', {}, { beatFloor: 300000 })
+
+  const wrote = await a.cliBeat()
+  assert.strictEqual(log.length, 1, 'the command actually appended, which is the point of having it')
+  assert.ok(/Wrote a beat/.test(JSON.stringify(wrote.nodes)), `not reported as written: ${JSON.stringify(wrote.nodes)}`)
+  assert.strictEqual(wrote.nodes[0].tone, 'success')
+
+  const again = await a.cliBeat()
+  assert.strictEqual(log.length, 1, 'and the second is suppressed, as the floor says')
+  assert.strictEqual(again.nodes[0].tone, 'muted', 'a suppressed beat is not a failure and must not be dressed as one')
+  assert.ok(/unchanged/.test(again.nodes[0].text), `it does not say why: ${JSON.stringify(again.nodes[0].text)}`)
+
+  // A feed that refuses is `danger`, and it is the case a person typing this needs to be
+  // able to tell from the quiet one.
+  const broken = net.device('dev-a', {
+    feed: {
+      who: async () => 'dev-a',
+      append: async () => { throw new Error('append() failed: the core is read-only') },
+      entries: async () => [],
+      own: async () => []
+    }
+  })
+  const refused = await broken.cliBeat()
+  assert.strictEqual(refused.nodes[0].tone, 'danger', 'a refused append read as an ordinary quiet beat')
+  assert.ok(broken.faults().some((f) => f.code === 'append-refused'), 'and it is in the fault register')
+})
+
+test('the report command is the panel and not a second, thinner rendering of it', async () => {
+  // The block a terser command-line rendering would drop to save four lines is the one
+  // this artifact exists for. So `report` is `view()` with the title removed and nothing
+  // else, and this is the assertion that keeps it that way.
+  const net = network(['dev-a', 'dev-b'])
+  await settle(net, ['dev-a', 'dev-b'])
+  const a = net.device('dev-a')
+
+  const panel = await a.view()
+  const report = await a.cliReport()
+  assert.strictEqual(JSON.stringify(report.nodes), JSON.stringify(panel.nodes),
+    'the command line renders something the shell does not, or the other way round')
+  assert.ok(/Not observed/.test(JSON.stringify(report.nodes)), 'the blind spots did not survive the command line')
+})
+
 /* ──────────────────────── the blind spots are declared ──────────────────────── */
 
 test('limits names every one of the four things an operator will ask about', () => {
