@@ -144,9 +144,14 @@ function network (devices) {
      *   builds with the port **absent** by default, because absent is the state every
      *   device was in before the port existed and is the state `limits()` has to keep being
      *   honest in. A case that wants the port supplies one.
+     * @param {{ maxMembers?: number, beatFloor?: number }} [config]
+     *   the kind's own config, as a network would sign it. Not memoized either: a case
+     *   that wires a device differently wants its own device, and a shared instance
+     *   built under one floor answering for another is a fixture that reports a
+     *   configuration nobody set.
      */
-    device (me, override = {}) {
-      const fresh = override.store || override.roster || override.feed || override.diagnostics
+    device (me, override = {}, config = undefined) {
+      const fresh = override.store || override.roster || override.feed || override.diagnostics || config
       if (!fresh) {
         const cached = instances.get(me)
         if (cached) return cached
@@ -213,7 +218,7 @@ function network (devices) {
         // against, and putting one in the default fixture would make every case below
         // pass against a device claiming it measured something.
         diagnostics: override.diagnostics
-      })
+      }, config)
       if (!fresh) instances.set(me, built)
       return built
     }
@@ -401,6 +406,238 @@ test('a fleet row carries the writer\'s own clock, which the substrate puts on t
     const last = log[log.length - 1]
     assert.strictEqual(m.at, last.at, `${m.device}'s row is not its newest entry's clock`)
   }
+})
+
+/* ─────────── the deficit that opens after first contact, which is the point ───── */
+
+/** @param {number} ms */
+const passes = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * One device's store, fresh.
+ *
+ * A case that wants several devices under different configs needs each to have its own,
+ * because the memoized instance is bypassed by an override and a shared store would
+ * carry one device's suppression into another's first beat.
+ */
+function memory () {
+  /** @type {Map<string, string>} */
+  const kv = new Map()
+  return {
+    get: async (/** @type {string} */ k) => (kv.has(k) ? String(kv.get(k)) : null),
+    put: async (/** @type {string} */ k, /** @type {string} */ v) => { kv.set(k, v); return true },
+    delete: async (/** @type {string} */ k) => kv.delete(k),
+    keys: async () => [...kv.keys()].sort()
+  }
+}
+
+/** @param {any} reading @param {string} device */
+const peer = (reading, device) => {
+  const found = reading.peers.find((/** @type {any} */ p) => p.device === device)
+  if (found === undefined) assert.fail(`${device} is in the roster so it must be in peers`)
+  return found
+}
+
+test('a member cut after first contact keeps a clean reach and grows an age', async () => {
+  // The case the whole release exists for, and the one the suite could not stage
+  // until `partition` stopped being retroactive. Nothing about `reached`, `silent` or
+  // `degraded` moves — they are honest and they answer a different question — and the
+  // reading an operator wanted is the one that does move.
+  const net = network(['dev-a', 'dev-b', 'dev-c'])
+  // A floor of 1ms, so this case's beats are about observation rather than about
+  // suppression. The floor has cases of its own below.
+  const a = net.device('dev-a', {}, { beatFloor: 1 })
+
+  await net.device('dev-b').beat()
+  await net.device('dev-c').beat()
+  await a.beat()
+
+  // Both peers advance and dev-a watches them do it. This is what turns a sighting
+  // into an observation; before it, an age would be an invented number.
+  net.push('dev-b', { type: 'beat', reach: 3, roster: 3, faults: [] })
+  net.push('dev-c', { type: 'beat', reach: 3, roster: 3, faults: [] })
+  await passes(4)
+  await a.beat()
+
+  // The fault: dev-b stops replicating to dev-a, having already been heard from.
+  net.partition('dev-a', 'dev-b')
+  net.push('dev-b', { type: 'beat', reach: 1, roster: 3, faults: [] })
+
+  const first = await a.local()
+  assert.strictEqual(first.degraded, false, 'the old reading says nothing is wrong, and is not lying')
+  assert.strictEqual(first.silent.length, 0, 'nobody is silent, because dev-b was heard from')
+  assert.strictEqual(peer(first, 'dev-b').silent, false, 'and dev-b in particular is not silent')
+
+  const wasB = peer(first, 'dev-b').age
+  assert.ok(typeof wasB === 'number', `dev-b has an age, got ${JSON.stringify(wasB)}`)
+
+  // Time passes, dev-c keeps replicating, dev-b cannot.
+  await passes(25)
+  net.push('dev-c', { type: 'beat', reach: 3, roster: 3, faults: [] })
+  await a.beat()
+
+  const later = await a.local()
+  const nowB = peer(later, 'dev-b').age
+  const nowC = peer(later, 'dev-c').age
+  assert.ok(typeof nowB === 'number' && typeof nowC === 'number', 'both have ages')
+  assert.ok(nowB > wasB, `dev-b's age did not grow: ${wasB} then ${nowB}`)
+  assert.ok(nowC < nowB,
+    `the reading cannot separate a member that is replicating from one that is not: dev-c ${nowC}, dev-b ${nowB}`)
+
+  // And the same field is on the fleet reading, which is the one an operator opens.
+  const f = await a.fleet()
+  const rowB = f.members.find((/** @type {any} */ m) => m.device === 'dev-b')
+  if (rowB === undefined) assert.fail('dev-b is still reporting, because its old beats are still held')
+  assert.ok(typeof rowB.age === 'number' && rowB.age > 0, `the fleet row has no age: ${JSON.stringify(rowB.age)}`)
+})
+
+test('the panel carries the age beside the reach, and says nothing at all when there is none', async () => {
+  // The surface an operator actually reads. A member with no observed advance must not
+  // get a placeholder: a dash or a zero on the line is read as a small age by everybody
+  // who does not scroll to the limits block, which is the exact substitution this
+  // artifact exists to refuse.
+  const net = network(['dev-a', 'dev-b'])
+  const a = net.device('dev-a', {}, { beatFloor: 1 })
+  await net.device('dev-b').beat()
+  await a.beat()
+
+  const cold = await a.view()
+  const coldText = JSON.stringify(cold.nodes)
+  assert.strictEqual(/last moved/.test(coldText), false,
+    'the panel claimed an age for a member this instance has never watched move')
+
+  net.push('dev-b', { type: 'beat', reach: 2, roster: 2, faults: [] })
+  await passes(4)
+  await a.beat()
+
+  const warm = await a.view()
+  const rows = JSON.stringify(warm.nodes)
+  assert.ok(/last moved .* ago/.test(rows), `the panel dropped the age: ${rows.slice(0, 400)}`)
+  // Rounded down and worded, not a raw millisecond count on a line a person reads.
+  assert.strictEqual(/last moved [0-9]+ ago/.test(rows), false, 'a bare millisecond count reached the panel')
+})
+
+test('a first sighting is not a freshness claim, so an age this instance never watched is null', async () => {
+  // The trap the `moved` flag exists for. dev-b wrote long before this instance
+  // started; recording "seen now" and reporting an age from it would make a member
+  // nobody has heard from in a week read as perfectly fresh, which is a worse answer
+  // than no answer and is the thing this artifact refuses to do.
+  const net = network(['dev-a', 'dev-b'])
+  net.push('dev-b', { type: 'beat', reach: 2, roster: 2, faults: [] })
+  const a = net.device('dev-a', {}, { beatFloor: 1 })
+
+  const cold = await a.local()
+  assert.strictEqual(peer(cold, 'dev-b').age, null, 'nothing has been watched, so nothing has an age')
+  assert.strictEqual(peer(cold, 'dev-a').age, null, 'including this device itself')
+
+  await a.beat()
+  await passes(5)
+  const sighted = await a.local()
+  assert.strictEqual(peer(sighted, 'dev-b').age, null,
+    'one sighting is not an advance; an age here would be a number nobody measured')
+
+  // Watched moving, and only then does it have one.
+  net.push('dev-b', { type: 'beat', reach: 2, roster: 2, faults: [] })
+  await a.beat()
+  assert.ok(typeof peer(await a.local(), 'dev-b').age === 'number',
+    'after this device watched the log move, the age is a measurement it made')
+})
+
+/* ───────────── the floor, which is what makes silence mean anything ──────────── */
+
+test('an unchanged census is suppressed inside the floor and written once past it', async () => {
+  const net = network(['dev-a'])
+  const a = net.device('dev-a', {}, { beatFloor: 40 })
+  const log = net.logs.get('dev-a')
+  if (log === undefined) assert.fail('dev-a has a log')
+
+  const first = await a.beat()
+  assert.strictEqual(first.wrote, true, 'the first census is always new')
+  const after = log.length
+
+  const inside = await a.beat()
+  assert.strictEqual(inside.wrote, false, 'nothing changed and no time passed, so nothing is written')
+  assert.strictEqual(log.length, after, 'and the feed did not grow')
+
+  await passes(60)
+  const past = await a.beat()
+  assert.strictEqual(past.wrote, true, 'past the floor an unchanged census is written anyway')
+  assert.strictEqual(log.length, after + 1, 'exactly once')
+
+  // And it is the *same* census, deliberately. The point of the floor is not that the
+  // content changed — it did not — it is that silence has to be falsifiable, so a
+  // device with nothing new to say still says it, on a bound.
+  assert.strictEqual(JSON.stringify(log[after].value), JSON.stringify(log[after - 1].value),
+    'the floor wrote a different census, which would mean the suppression was never the reason')
+})
+
+test('a floor of zero is the old pure-content behaviour, and is a thing a network can ask for', async () => {
+  const net = network(['dev-a'])
+  const a = net.device('dev-a', {}, { beatFloor: 0 })
+  const log = net.logs.get('dev-a')
+  if (log === undefined) assert.fail('dev-a has a log')
+
+  await a.beat()
+  const after = log.length
+  await passes(30)
+  assert.strictEqual((await a.beat()).wrote, false, 'switched off, no amount of time expires the suppression')
+  assert.strictEqual(log.length, after, 'so the feed is bounded by change alone, as it was before')
+
+  // And it says so. A knob that quietly removed a reading would be the thing this whole
+  // operation exists to stop — the row has to say the question is unanswerable here, not
+  // merely unanswered, because a member that never writes cannot be watched to stop.
+  const off = a.limits().find((/** @type {any} */ x) => /after this device first heard from it/.test(x.subject))
+  if (off === undefined) assert.fail('the first-contact row is unconditional')
+  assert.ok(/floor switched off|indistinguishable from one that is simply healthy/.test(off.because),
+    `the floor-off reason does not name what it costs: ${JSON.stringify(off.because)}`)
+  assert.ok(/nothing on this device/.test(off.covered),
+    `the row claims a cover this device does not have: ${JSON.stringify(off.covered)}`)
+
+  // The same row on a device with a floor points at the field that answers it.
+  const on = network(['dev-a']).device('dev-a', {}, { beatFloor: 1000 })
+    .limits().find((/** @type {any} */ x) => /after this device first heard from it/.test(x.subject))
+  if (on === undefined) assert.fail('the first-contact row is unconditional')
+  assert.ok(/\bage\b/.test(on.covered), `the row does not name the field that covers it: ${JSON.stringify(on.covered)}`)
+})
+
+test('a config that did not say gets the default floor rather than getting it switched off', async () => {
+  // The asymmetry that matters: `0` is a network asking for no floor, and a `NaN` or a
+  // missing field is a config that said nothing. Reading the second as the first would
+  // switch a device's heartbeat off on a typo, silently.
+  const net = network(['dev-a'])
+  for (const config of [undefined, {}, { beatFloor: undefined }, { beatFloor: NaN }]) {
+    const a = net.device('dev-a', { store: memory() }, /** @type {any} */ (config))
+    assert.strictEqual((await a.beat()).wrote, true, 'the first census is written')
+    await passes(5)
+    assert.strictEqual((await a.beat()).wrote, false,
+      `beatFloor ${JSON.stringify(config)} did not default; five milliseconds is not five minutes`)
+  }
+})
+
+test('a store written by a release that kept no clock beats once, and is in the new shape after', async () => {
+  // What an in-place upgrade meets. A `1.2.x` device wrote a bare digest, so this
+  // release cannot tell how old it is — and the safe reading of "cannot tell" is to
+  // beat, because a device that stayed quiet on an unreadable timestamp would be a
+  // device that upgraded itself into silence.
+  const net = network(['dev-a'])
+  /** @type {Map<string, string>} */
+  const kv = new Map([['health:last-census', '1/1/']])
+  const a = net.device('dev-a', {
+    store: {
+      get: async (/** @type {string} */ k) => (kv.has(k) ? String(kv.get(k)) : null),
+      put: async (/** @type {string} */ k, /** @type {string} */ v) => { kv.set(k, v); return true },
+      delete: async () => false,
+      keys: async () => [...kv.keys()]
+    }
+  })
+
+  const upgraded = await a.beat()
+  assert.strictEqual(upgraded.wrote, true, 'a stored digest with no clock is not evidence of a recent beat')
+  const stored = String(kv.get('health:last-census'))
+  assert.ok(/^[0-9]+\|1\/1\/$/.test(stored), `the store was not rewritten with a clock, got ${JSON.stringify(stored)}`)
+
+  // And from then on the floor applies normally, which is the whole point of rewriting it.
+  assert.strictEqual((await a.beat()).wrote, false, 'the second call is inside the default floor')
 })
 
 test('a peer folding a different roster is reported, which is resident staleness seen from outside', async () => {
@@ -686,10 +923,12 @@ test('nothing a consumer passes reaches the store, which is what closes the shar
 
   const value = String(written.get(key))
   assert.ok(!value.includes('SECRET'), 'no consumer-supplied string reached the store')
-  // The stronger claim: the digest is integers and vocabulary codes, so there is
-  // no room in it for anything a consumer chose.
-  assert.ok(/^[0-9]+\/[0-9]+\/[a-z:,0-9-]*$/.test(value),
-    `the digest is counts and codes only, got ${JSON.stringify(value)}`)
+  // The stronger claim: the value is this device's own clock and then a digest of
+  // integers and vocabulary codes, so there is no room in it for anything a consumer
+  // chose. The clock is this device's — `Date.now()` in `beat()` — and not a number any
+  // consumer supplied; `beat()` takes no argument, which is the reason it cannot be.
+  assert.ok(/^[0-9]+\|[0-9]+\/[0-9]+\/[a-z:,0-9-]*$/.test(value),
+    `the stored value is a local clock and a digest of counts and codes only, got ${JSON.stringify(value)}`)
 })
 
 test('the operations a consumer can call twice do not change what the next caller sees', async () => {
@@ -700,15 +939,48 @@ test('the operations a consumer can call twice do not change what the next calle
 
   // Two consumers, one instance. Consumer A reads everything it can; consumer B
   // must see exactly what it would have seen had A never called.
-  const before = JSON.stringify(await a.local())
+  //
+  // `age` is excluded from the comparison and *only* `age`, because it is the one
+  // field derived from the wall clock rather than from the feed. Excluding it is not
+  // a hole: what would make it a channel is a read *setting* the instant it is
+  // measured from, and no read does — `observe()` is called from `beat()` alone,
+  // which is on the `health` contract a `view` consumer does not hold. The assertion
+  // below is the one that proves it, by beating between the two readings and
+  // requiring the ages to have moved only then.
+  /** @param {any} reading */
+  const withoutAge = (reading) => JSON.stringify({
+    ...reading,
+    peers: reading.peers.map((/** @type {any} */ p) => ({ ...p, age: 'excluded' }))
+  })
+
+  const before = withoutAge(await a.local())
   for (let i = 0; i < 5; i++) {
     await a.local()
     await a.fleet()
     await a.view()
     a.faults()
   }
-  const after = JSON.stringify(await a.local())
-  assert.equal(after, before, 'every read is pure, so reads cannot signal between two consumers')
+  const after = withoutAge(await a.local())
+  assert.strictEqual(after, before, 'every read is pure, so reads cannot signal between two consumers')
+
+  // And the excluded field is not a back door. The sharp form: let dev-b's log
+  // actually advance, then read twice **without beating**. A read that recorded the
+  // advance would stamp this instance's clock at the moment consumer A called, and
+  // consumer B's next `age` would be a measurement of A's timing. Only `beat()` may
+  // move it, and `beat()` is on a contract a panel does not hold.
+  net.push('dev-b', { type: 'beat', reach: 2, roster: 2, faults: [] })
+  await a.local()
+  await a.fleet()
+  await passes(5)
+  const cold = (await a.local()).peers.filter((/** @type {any} */ p) => p.age !== null)
+  assert.strictEqual(cold.length, 0,
+    'a read recorded an observation, which would let one consumer time another\'s call')
+
+  // The same advance, seen through the one operation that is allowed to record it.
+  await a.beat()
+  await a.beat()
+  assert.ok(typeof peer(await a.local(), 'dev-b').age === 'number',
+    'and beating does record it, or the field would never have a value at all')
 })
 
 /* ──────────────────────── the blind spots are declared ──────────────────────── */

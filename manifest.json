@@ -1,6 +1,6 @@
 {
   "name": "health",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "entry": "/index.js",
   "deps": [
     {
@@ -11,13 +11,13 @@
   "contracts": [
     {
       "id": "health",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "shape": {
         "description": "What this device can see of its own health and the network's replication, reported through the network's own feed rather than to a collector. There is no endpoint and nothing phones home: a beat is an entry in this artifact's feed, so it reaches an operator the same way every other entry does — by being a member of the network they are a member of. Two things to write against. Every read here is eventually consistent for the reason platform:feed states: it merges the members this device can currently reach, so a fully partitioned member is absent rather than reported broken, and absence is the one fault this artifact cannot distinguish from a switched-off machine. And the coverage is partial by construction — call limits() and render what it names, because some of what an operator will ask about is not reachable from inside a realm and answering it with zero would be worse than not answering. What is reachable depends on the ports this network bound, which is why limits() is a call and not a document.",
         "operations": [
           {
             "name": "beat",
-            "description": "Append one census of what this device can currently see. The only operation here that writes anything, and it takes no argument on purpose: a beat carrying a caller's string would put text this artifact did not author into an append-only log that replicates to every member. Suppressed when the census is identical to the last one this device wrote, so a healthy fleet stops growing its feed rather than beating forever.",
+            "description": "Append one census of what this device can currently see. The only operation here that writes anything, and it takes no argument on purpose: a beat carrying a caller's string would put text this artifact did not author into an append-only log that replicates to every member. Suppressed when the census is identical to the last one this device wrote AND that beat is younger than this instance's beat floor. The floor is the whole of why a currency reading is possible: pure content-addressed suppression means a healthy member writes nothing, which makes a member that is fine and a member this device stopped replicating with produce byte-identical feeds, so no reading over the feed can separate them. Past the floor an unchanged census is written again — the same numbers, deliberately — so that a member's silence is falsifiable. A quiet fleet therefore grows its feed on time as well as on change, bounded at one entry per member per floor; a network that will not pay that sets the floor to zero, gets the old behaviour, and gets a limits() row saying currency is unanswerable there.",
             "params": [],
             "returns": {
               "type": "object",
@@ -61,7 +61,7 @@
                 },
                 "reached": {
                   "type": "number",
-                  "description": "Members this device holds at least one entry from"
+                  "description": "Members this device holds at least one entry from. Monotone by construction — a replicated block stays on disk, so a member counted here once is counted here forever, however long ago it arrived. That is the count this field has always named and it is not the answer to \"am I falling behind\"; peers[].age is"
                 },
                 "silent": {
                   "type": "array",
@@ -93,6 +93,11 @@
                       "silent": {
                         "type": "boolean",
                         "description": "Whether that member is in the signed roster and has sent this device nothing at all. Silence is not the same as failure — see limits"
+                      },
+                      "age": {
+                        "type": "number",
+                        "nullable": true,
+                        "description": "Milliseconds on THIS device's clock since this device last watched that member's log get longer, or null when it has not watched it move at all. The one reading here that answers \"am I falling behind on this member\": silent and seq answer whether anything ever arrived, which is permanent once true, and this answers when something last did. Never computed from the writer's timestamp — that is another device's unchecked clock and platform:feed says never to trust it — so it is a duration measured entirely here and is comparable across the members of one reading and not across devices. Null is not zero and not a large number: it means this instance has not seen the log move since it started, which lasts up to one beat floor after a zone restart. And it is only as informative as the beat floor the writing member is running: a member that never writes cannot be observed to have stopped, which is why suppression expires."
                       }
                     }
                   }
@@ -150,7 +155,12 @@
                       },
                       "at": {
                         "type": "number",
-                        "description": "That member's own clock when it wrote the beat. A hint, never a sort key"
+                        "description": "That member's own clock when it wrote the beat, as platform:feed carries it on the entry. A display hint and nothing else: it is that device's clock, nothing checks it, and it is never a sort key nor the input to any duration here"
+                      },
+                      "age": {
+                        "type": "number",
+                        "nullable": true,
+                        "description": "Milliseconds on THIS device's clock since this device last watched that member's log get longer, or null when it has not watched it move. The field to alert on, where at is the field to display — this one is measured here, so it is the only one of the two that means the same thing on every device reading it. See the same field on local().peers for what null means and why it is not zero"
                       },
                       "rosterDiffers": {
                         "type": "boolean",
@@ -272,12 +282,12 @@
   "kinds": [
     {
       "key": "health",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "instances": "explicit",
       "provides": [
         {
           "id": "health",
-          "version": "1.2.0"
+          "version": "1.3.0"
         },
         {
           "id": "view",
@@ -312,12 +322,17 @@
       ],
       "config": {
         "type": "object",
-        "description": "How much of a log this instance will fold",
+        "description": "How much of a log this instance folds, and how long it may stay quiet",
         "fields": {
           "maxMembers": {
             "type": "number",
             "optional": true,
             "description": "The most members whose beats are folded per call. A bound rather than a preference: a monitor must not become the reason a device is slow."
+          },
+          "beatFloor": {
+            "type": "number",
+            "optional": true,
+            "description": "The longest an unchanged census may go on suppressing a beat, in milliseconds. Five minutes when a network does not say — lib/resident.js re-derives on that clock, so freshness finer than it is not available anyway. Past the floor a device with nothing new to say writes the same census again, which is what makes a member going quiet mean something: with pure content-addressed suppression a healthy member and one this device stopped replicating with produce identical feeds. Zero or less switches the floor off and restores that older behaviour, bounding the feed by change alone at the cost of any currency reading; limits() on such a device says so."
           }
         }
       }

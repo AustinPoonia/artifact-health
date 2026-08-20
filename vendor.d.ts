@@ -95,3 +95,18 @@ declare const __filename: string
  * signed artifact's bytes is a poor place for the checker to have never looked.
  */
 declare const console: { log (...args: any[]): void }
+
+/**
+ * The runtime's timer, for the suite alone.
+ *
+ * `index.js` uses no timer and must not: an artifact that scheduled work would be
+ * doing something on a device between calls, and every reading here is computed on
+ * the call that asks for it. The three cases that need this are about the beat floor
+ * and about an age that grows, and neither can be staged without letting real time
+ * pass — a fake clock would be the suite deciding what `Date.now()` says, which is
+ * the shape of crutch this suite has already been caught on once.
+ *
+ * The same declaration six siblings carry, and `unknown` rather than a handle type
+ * for the same reason: nothing here ever cancels one.
+ */
+declare function setTimeout (cb: (...args: any[]) => void, ms?: number): unknown

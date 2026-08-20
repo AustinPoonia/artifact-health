@@ -225,7 +225,7 @@ test('every contract it provides is one it or a dependency declares', () => {
   // `health` moves with this artifact and `view` does not: `view` is `artifact-ui`'s
   // contract, so its version is a fact about that repo's declaration and pinning it to
   // this artifact's own number would be claiming to have published somebody else's.
-  assert.equal(provides.join(' '), 'health@1.2.0 view@1.1.0',
+  assert.equal(provides.join(' '), 'health@1.3.0 view@1.1.0',
     'the contract it authors, and the panel vocabulary it renders into')
 
   // The version it provides is the version it declares. Two numbers for one contract in
@@ -248,8 +248,13 @@ test('the config schema declares only the bound, so nothing configurable can wid
   const kind = manifest.kinds.find((/** @type {any} */ k) => k.key === 'health')
   assert.ok(kind.config, 'the kind declares a config schema, or the kernel refuses config to it')
   const fields = Object.keys(kind.config.fields).sort()
-  assert.equal(fields.join(' '), 'maxMembers',
-    'one field, a bound. A setting that changed what a beat carries would be a redaction decision in a network document')
+  // Two fields now, and both are still bounds rather than content. `maxMembers` bounds
+  // how much of a log is folded; `beatFloor` bounds how long a device may stay quiet.
+  // Neither changes what a beat *carries* — that is the line this case guards, and a
+  // setting that crossed it would be a redaction decision written into a network
+  // document by somebody who was configuring a monitor rather than authoring a contract.
+  assert.equal(fields.join(' '), 'beatFloor maxMembers',
+    'two fields, both bounds. A setting that changed what a beat carries would be a redaction decision in a network document')
   for (const f of Object.values(kind.config.fields)) {
     assert.equal((/** @type {any} */ (f)).type, 'number',
       'every setting is a number; a string setting is a string on its way into a replicated log')

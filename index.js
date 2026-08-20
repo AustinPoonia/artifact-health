@@ -275,10 +275,40 @@
  *
  * A feed is append-only, so a monitor that beats on a timer grows the network's
  * storage forever whether or not anything is wrong. So a beat is **suppressed when
- * the census has not changed**: a healthy fleet writes one beat per device and
- * then stops, and growth is driven by change rather than by time. The digest that
- * makes that possible is the one thing in the store, and the store is what carries
- * it across a restart of the resident process.
+ * the census has not changed**. The digest that makes that possible is the one thing
+ * in the store, and the store is what carries it across a restart of the resident
+ * process.
+ *
+ * That used to be the whole of it — "a healthy fleet writes one beat per device and
+ * then stops, and growth is driven by change rather than by time" — and the sentence
+ * was true and the design was wrong, in a way nothing here could see until somebody
+ * asked how far behind a member is. **A feed that only grows on change cannot answer
+ * a question about currency, in principle.** If a healthy member writes nothing, then
+ * "nothing new has arrived from that member" is produced identically by a member that
+ * is fine and by one this device stopped replicating with an hour ago. There is no
+ * reading over such a feed that separates them, because the two situations put the
+ * same bytes on the disk. Silence has to be falsifiable before staleness can be
+ * measured, and only a write makes it so.
+ *
+ * The obvious repair is the wrong one and is worth naming because it is the first
+ * thing anybody tries: put a timestamp in the census. The digest is taken over the
+ * census, so a clock inside it changes the digest on every tick, and the suppression
+ * never engages again — an entry per member per tick, forever. That is not a
+ * different bound, it is the removal of the bound.
+ *
+ * So the clock and the content are separated. The census stays integers and codes and
+ * carries no clock, and the *suppression* expires instead: `settings.beatFloor`, five
+ * minutes by default. A device with nothing new to say writes one beat per floor
+ * rather than one per tick or none ever, which is a bound in entries per member per
+ * day, and it makes a member's silence mean something an operator can act on. The
+ * cost is real and is stated rather than absorbed — a quiet fleet's feed now grows on
+ * time as well as on change — and a network that cannot pay it sets the floor to zero
+ * and gets the old behaviour back, with `limits()` on that device saying what it gave
+ * up.
+ *
+ * The reading built on it never compares two devices' clocks. `entry.at` is the
+ * writer's own and `platform:feed` says never to trust it; `age` is this device's
+ * clock since this device watched that member's log get longer. See `advanced`.
  */
 const shape = require('./lib/shape')
 const { CODES, classify, safe } = require('./lib/codes')
@@ -316,6 +346,55 @@ const KIND = /^[a-z][a-z0-9-]{0,31}$/
 
 /** Where a name that cannot be a kind is counted. One row, however many arrive. */
 const UNNAMED = 'unnamed'
+
+/**
+ * A duration in milliseconds as a word a person reads, for the panel and nowhere else.
+ *
+ * Coarse on purpose and it rounds down. A panel is read at a glance, "4m" is what an
+ * operator needs from it, and the exact number is on `age` for anything that wants to
+ * compare or to threshold — a renderer that printed `254113ms` would be handing a reader
+ * arithmetic instead of an answer. Rounding *down* rather than to nearest, because this
+ * is a lower bound on how stale a member is and a value that rounded up would be the one
+ * number here that overstates a fault.
+ *
+ * @param {number} ms
+ */
+function since (ms) {
+  if (ms < 1000) return 'under a second'
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`
+}
+
+/**
+ * How long an unchanged census suppresses a beat when a network says nothing.
+ *
+ * Five minutes, and the number is borrowed rather than invented: it is
+ * `lib/resident.js`'s `REFOLD_INTERVAL`, the clock a resident device already re-reads
+ * its logs on. See `settings.beatFloor` for what the floor is for.
+ */
+const FLOOR = 300000
+
+/**
+ * The floor a config asked for, or the default, with anything unusable treated as the
+ * default rather than as off.
+ *
+ * The asymmetry is deliberate. `0` and negatives switch the floor off, because a
+ * network may mean that; a string, a `NaN` or a missing field is a config that did not
+ * say, and a monitor that read "did not say" as "never beat again" would go quiet on a
+ * typo. Off has to be asked for.
+ *
+ * @param {unknown} asked
+ */
+function floor (asked) {
+  if (asked === undefined || asked === null) return FLOOR
+  const ms = Number(asked)
+  if (!Number.isFinite(ms)) return FLOOR
+  return ms > 0 ? ms : 0
+}
 
 module.exports = {
   /**
@@ -367,7 +446,48 @@ module.exports = {
        * latest beat per member is ever used, so the fold keeps one record per
        * device and the cost is bounded by the roster rather than by the log.
        */
-      maxMembers: (config && config.maxMembers) || 4096
+      maxMembers: (config && config.maxMembers) || 4096,
+
+      /**
+       * The longest an unchanged census may go on suppressing a beat.
+       *
+       * **This is the decision the currency reading turns on, and the two halves pull
+       * opposite ways, so it is written here once rather than argued at each call
+       * site.** A beat used to be suppressed on content alone: identical census,
+       * nothing written, "growth is driven by change rather than by time". The price
+       * of that was not visible until somebody asked how far behind a member is,
+       * because it makes the question unanswerable in principle — if a healthy member
+       * stops writing, then "nothing new from that member" is exactly what a healthy
+       * member and a disconnected one both look like, and no reading over the feed can
+       * separate them. Silence has to be falsifiable for staleness to mean anything.
+       *
+       * The other side is real too. A timestamp *inside* the census is the obvious way
+       * to make the beat advance, and it is the wrong one: the digest is taken over the
+       * census, so a clock in it writes an entry every single tick, forever, on an
+       * append-only log that replicates to every member. That is not a bound, it is the
+       * absence of one.
+       *
+       * So the two are separated. The digest stays content-addressed and carries no
+       * clock — `census()` is integers and codes, exactly as before — and the
+       * suppression it drives *expires*. A device with nothing new to say writes one
+       * beat per floor and no more, which is a bound in entries-per-member-per-day
+       * rather than in entries-per-tick, and it makes silence mean something: past a
+       * floor and a bit, a member that has written nothing is a member this device is
+       * not replicating with.
+       *
+       * Five minutes by default, which is `lib/resident.js`'s own re-derive interval
+       * rather than a number chosen here — a device that re-reads its logs on that
+       * clock cannot usefully be asked for freshness finer than it, and matching it
+       * means the two cadences do not beat against each other.
+       *
+       * **Zero or less switches it off**, and that is a real option rather than a
+       * degenerate one: a network that cannot afford one entry per member per five
+       * minutes can have the old pure-content behaviour back, and what it gives up is
+       * stated in `limits()` on that device rather than inferred. It is off, not
+       * "immediate" — a floor of zero would mean beating on every call, and no caller
+       * wants a monitor whose cheapest reading is a write.
+       */
+      beatFloor: floor(config && config.beatFloor)
     }
 
     /**
@@ -533,6 +653,109 @@ module.exports = {
     }
 
     /**
+     * When this device last watched each member's log move, by **this device's own
+     * clock**, and whether it has ever watched it move at all.
+     *
+     * ## Why the reading cannot be built out of the timestamps the feed carries
+     *
+     * The obvious currency reading is `now - entry.at`: every entry has the writer's
+     * clock on it, so subtract. It is wrong, and `platform:feed` says so in the
+     * declaration of the field — "a wall-clock hint written by the appending device.
+     * Never sort on it and never trust it: it is that device's clock, and nothing checks
+     * it." Subtracting another device's unchecked clock from this one's is not a
+     * measurement; it is two numbers that happen to have the same units. A member with a
+     * clock an hour fast would read as an hour in the future, one an hour slow as an
+     * hour stale, and the artifact whose whole argument is that an unqualified number is
+     * worse than none would be printing exactly that.
+     *
+     * So nothing here compares clocks. The only clock this reading uses is this device's
+     * own, and the only event it times is one this device witnessed: *its own log got
+     * longer for that member*. That is a first-person observation in the same sense
+     * `faults()` is first-person, and it is the one form of freshness a realm can
+     * actually establish.
+     *
+     * ## Why `moved` exists, and why a first sighting reads as unknown
+     *
+     * The trap is the first call. On it, every member is recorded at whatever sequence
+     * number it happens to be at — so a member whose last block arrived a week ago and a
+     * member that is replicating fine are both recorded *now*, and both would read as
+     * perfectly fresh. That is inventing a number that looks like freshness, which is
+     * worse than the gap it fills.
+     *
+     * So a device is not given an age until this instance has watched it advance once.
+     * Before that, `age` is `null` — not measured — and `limits()` carries the row.
+     * The cost is real and is the price of not lying: for up to one `beatFloor` after
+     * this zone starts, nothing has an age. The counters are per-instance and reset with
+     * the zone for the same reason `faults` does, and the alternative — a durable map of
+     * per-member timestamps in the store — is the write pattern that grows without bound
+     * while holding nothing live.
+     *
+     * ## Why only `beat()` writes here, and no read does
+     *
+     * `THREAT-MODEL.md` §2.1 again, and it moved this line. If a *read* recorded the
+     * observation, then consumer A's `local()` would set the instant that consumer B's
+     * `age` is measured from, and B would be reading the time at which A called — a
+     * channel, in the one artifact that argued at length it has none. `beat()` is on the
+     * `health` contract, which a network grants separately and which neither `view`
+     * consumer holds, so the cadence of these observations is this device's own beat
+     * cadence and not anything a panel can trigger.
+     *
+     * What survives is that `age` is a function of the wall clock as well as of the feed,
+     * so two reads a second apart differ. That is not §2.1: the clock is not a value a
+     * consumer put here, both consumers have one, and `seen.at` tracks a beat whose entry
+     * is in the feed both can read. Enumerable, which is the test §2.4 asks for — one
+     * sequence number, one local instant and one boolean per member.
+     *
+     * @type {Map<string, { seq: number, at: number, moved: boolean }>}
+     */
+    const advanced = new Map()
+
+    /**
+     * Record what this device now holds, against what it held at the last beat.
+     *
+     * Bounded by `maxMembers`, like the fold it reads, and for the same reason: a map
+     * keyed by anything a peer can mint is a map a peer can grow.
+     *
+     * @param {Map<string, { seq: number }>} byDevice
+     * @param {number} now   this device's clock, passed in so one beat times one instant
+     */
+    function observe (byDevice, now) {
+      for (const [device, row] of byDevice) {
+        const seen = advanced.get(device)
+        if (seen === undefined) {
+          if (advanced.size >= settings.maxMembers) continue
+          // Sighted, not timed. See `moved` above: pretending a first sighting is an
+          // advance is the whole failure this field exists to avoid.
+          advanced.set(device, { seq: row.seq, at: now, moved: false })
+        } else if (row.seq > seen.seq) {
+          seen.seq = row.seq
+          seen.at = now
+          seen.moved = true
+        }
+      }
+    }
+
+    /**
+     * How long since this device watched that member's log move, in milliseconds.
+     *
+     * `null` is "this instance has not watched it move", which is not zero and is not a
+     * large number. A caller that renders it as either has undone the point.
+     *
+     * A backwards clock floors at zero rather than going negative. A negative age is not
+     * a reading anybody can act on, and the honest alternative — reporting the jump —
+     * is a fact about this device's clock rather than about the network.
+     *
+     * @param {string} device
+     * @param {number} now
+     * @returns {number | null}
+     */
+    function age (device, now) {
+      const seen = advanced.get(device)
+      if (seen === undefined || !seen.moved) return null
+      return now - seen.at > 0 ? now - seen.at : 0
+    }
+
+    /**
      * Everything a reading here is computed from, fetched once.
      *
      * Three port calls, in parallel, shared by `census`, `local` and `fleet` so
@@ -592,14 +815,21 @@ module.exports = {
      * @param {string[]} members
      * @param {Map<string, { seq: number, beats: number, beat: any }>} byDevice
      * @param {string} me
+     * @param {number} now   this device's clock, so every row of one reading is one instant
      */
-    function reading (members, byDevice, me) {
+    function reading (members, byDevice, me, now) {
       const peers = members.map((device) => {
         const row = byDevice.get(device)
         return {
           device,
           seq: row ? row.seq : -1,
           beats: row ? row.beats : 0,
+          // The field `silent` is not and cannot be. `silent` answers "has anything ever
+          // arrived", which is monotone and permanent; this answers "when did anything
+          // last arrive", which is the question an operator was asking all along. Both,
+          // rather than one redefined into the other: a caller reading `silent` today is
+          // reading a promise this contract made and gets to keep reading it.
+          age: age(device, now),
           // Not `!row`: this device is never silent to itself, and `reaches` holds
           // the argument for why that is a correction and not a special case.
           // `seq` is still reported as it stands, so a device that has never
@@ -622,19 +852,26 @@ module.exports = {
      */
     async function census () {
       const { members, byDevice, me } = await snapshot()
-      const reach = reading(members, byDevice, me).reached
+      // `Date.now()` is passed and discarded: `reading` computes an age per row and a
+      // census keeps none of them. That is the separation this release rests on — the
+      // digest is over content only, so nothing clock-shaped can reach it by accident,
+      // and the one thing that *does* expire is the suppression rather than the census.
+      const reach = reading(members, byDevice, me, Date.now()).reached
 
       return {
-        type: 'beat',
-        reach,
-        roster: members.length,
-        // Sorted by code so that two censuses with the same content produce the
-        // same digest regardless of the order faults happened to be recorded in.
-        // Without this a beat would be "changed" every time two faults arrived in
-        // a different order, which is a feed growing on noise.
-        faults: [...faults.entries()]
-          .map(([code, seen]) => [code, seen.count])
-          .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+        byDevice,
+        value: {
+          type: 'beat',
+          reach,
+          roster: members.length,
+          // Sorted by code so that two censuses with the same content produce the
+          // same digest regardless of the order faults happened to be recorded in.
+          // Without this a beat would be "changed" every time two faults arrived in
+          // a different order, which is a feed growing on noise.
+          faults: [...faults.entries()]
+            .map(([code, seen]) => [code, seen.count])
+            .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+        }
       }
     }
 
@@ -653,21 +890,75 @@ module.exports = {
       return `${c.reach}/${c.roster}/${c.faults.map((f) => `${f[0]}:${f[1]}`).join(',')}`
     }
 
+    /**
+     * What the store holds under `DIGEST`, as the two things it means.
+     *
+     * `<at>|<digest>` — this device's clock when it last appended, and the census it
+     * appended. Two fields in one value rather than two keys, because they are written
+     * together or not at all: a store that took the first `put` and refused the second
+     * would leave a device believing it had beaten at a time it had not, which is the
+     * failure the write ordering in `beat()` already exists to avoid.
+     *
+     * `|` is safe as the separator by construction: a digest is integers, `/`, `,`, `:`
+     * and fault codes, and `lib/codes.js`'s vocabulary is lowercase and hyphens.
+     *
+     * A value with no `|` is what a `1.2.x` device wrote — a bare digest and no time.
+     * It parses to a null clock, which the floor reads as "cannot tell how old", so an
+     * upgraded device writes one beat and is in the new format from then on. Beating
+     * once too often on an upgrade is the right direction to fail in.
+     *
+     * @param {unknown} stored
+     * @returns {{ at: number | null, digest: string } | null}
+     */
+    function written (stored) {
+      if (typeof stored !== 'string' || stored.length === 0) return null
+      const cut = stored.indexOf('|')
+      if (cut < 0) return { at: null, digest: stored }
+      const at = Number(stored.slice(0, cut))
+      return { at: Number.isFinite(at) ? at : null, digest: stored.slice(cut + 1) }
+    }
+
     return {
       /**
-       * Append one census, unless it is the one already written.
+       * Append one census, unless it is the one already written *and* it was written
+       * recently enough that writing it again would say nothing.
        *
        * The suppression is the bound on an append-only log, and the store is what
        * makes it survive a restart of the resident process. A store that cannot be
        * read degrades to beating — `store-unreachable` is counted and the beat goes
        * ahead — because the failure a monitor must not have is silence.
+       *
+       * `settings.beatFloor` is the whole of what changed and the argument is there.
+       * The short form: content-addressed suppression alone makes a healthy member and
+       * a disconnected one produce identical feeds, so it makes staleness unmeasurable
+       * rather than merely unmeasured.
+       *
+       * The two clocks read here are both this device's own, taken from one `Date.now()`
+       * so that a beat is timed at one instant, and compared only against a value this
+       * same device wrote. Nothing in this method looks at another device's clock, which
+       * is the property that makes the floor sound where `entry.at` arithmetic would not
+       * be.
        */
       async beat () {
-        const c = await census()
+        const { value: c, byDevice } = await census()
+        const at = Date.now()
+        // Before the append and against the snapshot the census was taken from, so this
+        // device's own row lags by one beat. That is honest — it has not yet watched
+        // the entry it is about to write arrive — and it is why a device's first two
+        // beats leave its own `age` null.
+        observe(byDevice, at)
         const now = digest(c)
 
-        const last = await attempt(() => deps.store.get(DIGEST), 'store-unreachable', null)
-        if (last === now) {
+        const last = written(await attempt(() => deps.store.get(DIGEST), 'store-unreachable', null))
+        const unchanged = last !== null && last.digest === now
+        // A clock that jumped backwards gives a negative elapsed, which is not inside
+        // the floor: the device beats. Beating on a bad clock is recoverable and going
+        // quiet on one is not.
+        const elapsed = last !== null && last.at !== null ? at - last.at : null
+        const recent = settings.beatFloor <= 0 ||
+          (elapsed !== null && elapsed >= 0 && elapsed < settings.beatFloor)
+
+        if (unchanged && recent) {
           return { wrote: false, seq: null, reach: c.reach, roster: c.roster }
         }
 
@@ -686,7 +977,7 @@ module.exports = {
         // as written on a call where the append was refused, and the next call
         // would suppress the retry — a device that stopped reporting and believed
         // it had.
-        await attempt(() => deps.store.put(DIGEST, now), 'store-refused', false)
+        await attempt(() => deps.store.put(DIGEST, `${at}|${now}`), 'store-refused', false)
 
         return {
           wrote: true,
@@ -707,7 +998,10 @@ module.exports = {
        */
       async local () {
         const { members, byDevice, me } = await snapshot()
-        const { peers, silent, reached } = reading(members, byDevice, me)
+        // One instant for the whole reading. Calling `Date.now()` per row would give a
+        // record whose ages were measured microseconds apart, which is invisible and is
+        // still two facts in one object.
+        const { peers, silent, reached } = reading(members, byDevice, me, Date.now())
 
         return {
           device: me,
@@ -739,6 +1033,7 @@ module.exports = {
       async fleet () {
         const { members, byDevice } = await snapshot()
         const mine = members.length
+        const now = Date.now()
 
         const reporting = []
         for (const [device, row] of byDevice) {
@@ -751,6 +1046,12 @@ module.exports = {
             roster: Number.isFinite(theirRoster) ? theirRoster : 0,
             faults: Array.isArray(row.beat.faults) ? row.beat.faults.length : 0,
             at: row.at,
+            // The field to act on, where `at` is the field to display. `at` is that
+            // member's clock and this is this device's, so only one of the two is a
+            // duration anybody can compare across a fleet — and it is the one the
+            // sort below deliberately does not use, because a member reaching nobody
+            // is a worse thing to find than a member that is merely behind.
+            age: age(device, now),
             // Only meaningful when this device has a roster of its own. With no
             // denominator every member would "differ", which is a fleet of false
             // positives caused by this device's own fault.
@@ -966,17 +1267,34 @@ module.exports = {
            * and no row here saying so, which is the failure mode this whole operation
            * exists to prevent: not a wrong number, an unasked question rendered as a
            * healthy one.
+           *
+           * `age` is the field for it now, so the row stays at `partial` rather than
+           * leaving — and what it discloses has moved to the two things `age` cannot do.
+           * It is null until this instance has watched that member's log move once, so a
+           * freshly started zone knows nothing for up to a floor; and it is only as good
+           * as the floor, because a device that never writes cannot be observed to have
+           * stopped. Which is why the row says something different when the floor is off:
+           * there the question is not merely unanswered, it is unanswerable, and that is
+           * the disclosure the knob owes.
            */
           {
             subject: 'a member that stopped replicating after this device first heard from it',
             observed: 'partial',
-            because:
-              'reached, silent and degraded are computed from whether anything has ever arrived from a ' +
-              'member, and a block that has replicated stays on disk — so first contact is permanent and a ' +
-              'deficit that opens after it moves none of the three',
-            covered:
-              'the seq on each row of local().peers, which a caller holding an earlier reading can compare ' +
-              'against a later one'
+            because: settings.beatFloor > 0
+              ? 'reached, silent and degraded are computed from whether anything has ever arrived from a ' +
+                'member, and a block that has replicated stays on disk — so first contact is permanent and ' +
+                'a deficit that opens after it moves none of the three. age answers it instead, and is null ' +
+                'until this instance has watched that member\'s log move once, which is up to one beat floor ' +
+                'after this zone started'
+              : 'reached, silent and degraded are computed from whether anything has ever arrived from a ' +
+                'member, and a block that has replicated stays on disk — so first contact is permanent and ' +
+                'a deficit that opens after it moves none of the three. This instance has its beat floor ' +
+                'switched off, so a member with nothing new to say writes nothing at all, and a member that ' +
+                'has stopped replicating is indistinguishable from one that is simply healthy and quiet',
+            covered: settings.beatFloor > 0
+              ? 'age, on every row of local().peers and fleet().members, in milliseconds on this device\'s ' +
+                'own clock — never on the writer\'s'
+              : 'nothing on this device; a network that wants currency has to sign a beat floor above zero'
           }
         ]
 
@@ -1074,7 +1392,16 @@ module.exports = {
             children: f.members.slice(0, 10).flatMap((m) => [
               {
                 type: 'text',
-                text: `${m.reach} of ${m.roster} reached${m.rosterDiffers ? ', and its roster count differs from this device\'s' : ''}`,
+                // `age` on the same line rather than a row of its own, because it is the
+                // second half of one sentence about one member and a reader comparing two
+                // members should not have to hold two lists in their head. Rendered as
+                // "last moved" rather than as a bare number, and *omitted* rather than
+                // shown as a dash when it is null: this panel already carries a `limits()`
+                // block that says what null means, and a placeholder on the line would be
+                // read as a small age by everybody who did not scroll down to it.
+                text: `${m.reach} of ${m.roster} reached` +
+                  (typeof m.age === 'number' ? `, last moved ${since(m.age)} ago` : '') +
+                  (m.rosterDiffers ? ', and its roster count differs from this device\'s' : ''),
                 tone: m.reach < m.roster ? 'warning' : undefined
               },
               { type: 'code', text: m.device }

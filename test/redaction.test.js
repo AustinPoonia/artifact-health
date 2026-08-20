@@ -239,8 +239,8 @@ test('a member record carrying fields this artifact must not report is stripped 
   const l = await instance.local()
   assertClean(JSON.stringify(l), 'local()')
   for (const p of l.peers) {
-    assert.equal(Object.keys(p).sort().join(' '), 'beats device seq silent',
-      'a peer record carries four fields and none of them is a user id')
+    assert.equal(Object.keys(p).sort().join(' '), 'age beats device seq silent',
+      'a peer record carries five fields and none of them is a user id')
   }
 })
 
@@ -297,8 +297,13 @@ test('the census digest in the store is counts and codes, with nowhere for a str
 
   assert.equal(kv.size, 1, 'one key')
   const value = String([...kv.values()][0])
-  assert.ok(/^[0-9]+\/[0-9]+\/[a-z:,0-9-]*$/.test(value),
-    `the digest matches counts and codes only, got ${JSON.stringify(value)}`)
+  // `<clock>|<digest>`. The clock is this device's own `Date.now()` at the beat, which is
+  // not a value any caller supplied — `beat()` takes no argument, which is the reason it
+  // cannot be — and the digest is unchanged: counts and codes, with nowhere for a string
+  // to sit. Both halves are asserted, because the store is the one thing this instance
+  // remembers between calls and §2.4 asks for it to be enumerable.
+  assert.ok(/^[0-9]+\|[0-9]+\/[0-9]+\/[a-z:,0-9-]*$/.test(value),
+    `the stored value matches a local clock and a digest of counts and codes only, got ${JSON.stringify(value)}`)
 })
 
 /* ──── the journal's free text, which is the one substrate this feed must not meet ──── */
