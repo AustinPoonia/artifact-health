@@ -29,6 +29,7 @@
     "vendor.d.ts"
   ],
   "devDependencies": {
+    "artifact-ui": "file:../artifact-ui",
     "bare-assert": "^1.2.0",
     "bare-runtime": "^1.30.3",
     "bare-tap": "^1.0.0",

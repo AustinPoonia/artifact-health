@@ -1436,6 +1436,15 @@ module.exports = {
        * A `warning` tone on the limits, not `muted`. Muted is what the vocabulary
        * uses for the absence of content, and this is the opposite — it is content
        * about an absence, and it is the part of the panel a reader must not skim.
+       *
+       * And every sentence on this panel is a `paragraph`, which is the second
+       * decision worth naming because rendering `limits()` and then clipping it is
+       * not rendering it. `text` loses the tail at the frame and the tail of one of
+       * these rows is over 450 characters of it, so the block this artifact exists
+       * for was, on every terminal, an ellipsis where the reason should be. Numbers
+       * stay `field` and a device key stays `code`: a short integer cannot clip and a
+       * key must not be folded. Prose folds. The bill is height, and the paragraphs
+       * here say what each one pays.
        */
       async view () {
         const [l, f, d] = await Promise.all([this.local(), this.fleet(), this.diagnostics()])
@@ -1453,7 +1462,12 @@ module.exports = {
         ]
 
         if (f.members.length === 0) {
-          nodes.push({ type: 'text', text: 'No member has reported a beat here yet.', tone: 'muted' })
+          // `paragraph` because it is a sentence, not because it is long: this one fits
+          // inside the 80 an adapter passes and would only have been clipped in a frame
+          // narrow enough that the clip took the verb. Every other piece of prose on this
+          // panel is a `paragraph` now, and a lone `text` node among them would read as a
+          // decision somebody made about this line rather than as the one that was left.
+          nodes.push({ type: 'paragraph', text: 'No member has reported a beat here yet.', tone: 'muted' })
         } else {
           nodes.push({
             type: 'rows',
@@ -1462,20 +1476,30 @@ module.exports = {
             // same reason and after the same mistake was made there: a describing
             // label, and the identifier as a `code` node underneath. A device key
             // is 52 characters, it is the one string on the line a person copies
-            // into another command, and `code` is the only node a renderer
-            // promises never to ellipsize. A `field` would put it in `value`,
-            // which clips — so it would look right at 120 columns and be
-            // unusable at 80, which is the width the OS adapters actually pass.
+            // into another command, and `code` is the node that promises never to
+            // reflow one — `paragraph` also never ellipsizes, but it breaks
+            // between words and would put a break inside a key that has none. A
+            // `field` would put the key in `value`, which clips outright, so it
+            // would look right at 120 columns and be unusable at 80, which is the
+            // width the OS adapters actually pass.
             //
             // `ponytail:` the cost is height, exactly as it is there — ten
-            // members is twenty lines rather than ten. The cap of ten is what
-            // bounds it, and the cap is the ceiling: a fleet with eleven
-            // struggling members shows ten, and the eleventh is only in
-            // `fleet()`. The upgrade path is a panel that can paginate, which is
-            // a `view` vocabulary question and not this artifact's to answer.
+            // members is twenty lines rather than ten, and up to thirty now that
+            // the describing line folds instead of clipping: at 80 columns a
+            // member whose roster differs and whose age is known writes over
+            // 90 characters, so its line is two. The cap of ten is what bounds it,
+            // and the cap is the ceiling: a fleet with eleven struggling members
+            // shows ten, and the eleventh is only in `fleet()`. The upgrade path
+            // is a panel that can paginate, which is a `view` vocabulary question
+            // and not this artifact's to answer.
             children: f.members.slice(0, 10).flatMap((m) => [
               {
-                type: 'text',
+                // `paragraph`, for the reason the block below the divider is one: the
+                // clipped tail here was `differs from this device's`, so a frame at 80
+                // dropped the staleness this line exists to report and left the reach
+                // reading looking complete. The comment below already calls this one
+                // sentence about one member, and a sentence is what a `paragraph` is for.
+                type: 'paragraph',
                 // `age` on the same line rather than a row of its own, because it is the
                 // second half of one sentence about one member and a reader comparing two
                 // members should not have to hold two lists in their head. Rendered as
@@ -1528,7 +1552,13 @@ module.exports = {
             // device rather than this network, `fetch` is finally safe to read as
             // failures and is zero here for a structural reason rather than a happy one,
             // and `network` is the one name left that is still several questions.
-            type: 'text',
+            //
+            // Four sentences and 379 characters of them, so `text` clipped it after the
+            // first at every width an adapter passes — which left the panel promising
+            // three claims and printing one, and the two it dropped were the two about
+            // the counts a reader is most likely to misread. `paragraph`, therefore, for
+            // the same reason the block below the divider is one.
+            type: 'paragraph',
             text: 'These are the whole device\'s counts, across every network it has joined. ' +
               'zone is instances whose thread died and refused is things this device turned ' +
               'down, both exactly; fetch is failures only, and it reads zero on a device you ' +
@@ -1551,8 +1581,31 @@ module.exports = {
         nodes.push({
           type: 'rows',
           label: 'Not observed',
+          // `paragraph`, and this is the difference between the block existing and the
+          // block being decoration. A `text` node is clipped at the frame; the longest
+          // row here renders to 526 characters — the first-contact row on a device whose
+          // beat floor is switched off — and every other row is over 120. No terminal is
+          // that wide and no width setting reaches it: an adapter passes 80, the renderer
+          // floors at 20, and what a clip takes off is the tail, which is the half of the
+          // sentence that says what the blind spot actually is. So the one way to read
+          // these rows was to render very wide into a file, which is not a surface an
+          // operator has. An artifact whose entire argument is that an unqualified number
+          // is worse than no number cannot ship its qualifications behind a redirect.
+          //
+          // The cost is height, exactly as it is for the `code` nodes above: that row is
+          // seven lines at 80 columns rather than one, and this block is now the tallest
+          // thing on the panel. It is the right way round. The six lines a clip saved
+          // were not six shorter lines of the same reason, they were six lines of nothing.
+          //
+          // The marker goes inside the fold — `render.js` says so — and here that is
+          // load-bearing rather than merely tolerable. `[!]` sits at the head of a row's
+          // first line and on no other line of it, so it is the one thing telling a
+          // reader where one folded row ends and the next begins. The subject still opens
+          // its own line; at 80 the `(partial):` lands on the second, which reads as the
+          // sentence it is. Putting the subject in front of the fold instead means a node
+          // of its own, which is a different panel and a `view` vocabulary question.
           children: this.limits().map((x) => ({
-            type: 'text',
+            type: 'paragraph',
             text: `${x.subject} (${x.observed}): ${x.because}`,
             tone: 'warning'
           }))
@@ -1641,7 +1694,13 @@ module.exports = {
         if (result.wrote) {
           return {
             nodes: [{
-              type: 'text',
+              // `paragraph`, for the reason the panel's rows are: `text` clips and
+              // `paragraph` folds. This one fits at 80 today, but it is prose with an
+              // interpolated count in it, and the sibling below already does not fit —
+              // so the type is chosen for what the node *is* rather than for the length
+              // it happens to have, which is the mistake that clipped four rows of the
+              // panel for as long as it existed.
+              type: 'paragraph',
               text: `Wrote a beat at sequence ${result.seq}: ${result.reach} of ${result.roster} members reached.`,
               tone: 'success'
             }]
@@ -1655,7 +1714,10 @@ module.exports = {
         const refused = this.faults().some((f) => f.code === 'append-refused')
         return {
           nodes: [{
-            type: 'text',
+            // Both spellings below are 111 and 117 characters, so `text` clipped this
+            // at every width an adapter passes — and the clipped tail of the second is
+            // *why nothing was written*, which is the whole content of the line.
+            type: 'paragraph',
             text: refused
               ? 'The feed refused the append, so this device did not report. It is still reachable to whoever is standing at it.'
               : `Nothing written: ${result.reach} of ${result.roster} reached, unchanged since the last beat and recent enough that repeating it would say nothing.`,

@@ -34,6 +34,19 @@ const health = require('..')
 // The vocabulary, so the one case below that asserts a fault code is a declared one
 // compares against the register rather than against a string it remembered.
 const { CODES } = require('../lib/codes')
+// The real renderer, and the real normalizer in front of it, so that one case can
+// assert on lines a device would print rather than on the tree it hands over.
+//
+// `artifact-ui` and not a local imitation, and it is a `file:../artifact-ui`
+// devDependency for it — which is what the OS adapters in this fleet already do, for
+// this reason. A stub that folded would prove only that this suite can fold; what the
+// case below is about is which of `clip` and `fold` the shipped renderer applies to the
+// nodes this artifact emits, and that is a fact about `artifact-ui`'s source. The
+// normalizer is in the path because a shell puts it there: `panel()` is the boundary
+// every node crosses before a frame is chosen, so skipping it would render a tree no
+// consumer ever sees.
+const { render } = require('artifact-ui/lib/render')
+const { panel: normalize } = require('artifact-ui/lib/view')
 
 /** @type {[string, () => Promise<void> | void][]} */
 const cases = []
@@ -1182,6 +1195,90 @@ test('a device key on the panel is a code node, so a narrow frame cannot clip it
     'the member key is in a code node — the one node a renderer promises never to ellipsize')
 })
 
+/**
+ * The panel through the real renderer, at the widths a device actually renders at.
+ *
+ * Every other panel case in this file reads the tree, and a tree is not what an
+ * operator meets. For one release the `limits()` block was a column of `text` nodes,
+ * which `artifact-ui` **clips**: the longest row measures 526 characters, so at the 80
+ * an adapter passes the panel printed the subject and an ellipsis where the reason
+ * should be. Nothing here noticed, because every assertion was on `node.text` — the
+ * string before the frame got to it — and the string was always perfect.
+ *
+ * So this case asserts on the printed lines, and it asserts the *fold* rather than the
+ * node type: the property is that a row survives whole at a width narrower than it,
+ * which a `paragraph` gives and a `text` cannot, and which stays true if the vocabulary
+ * ever grows a third node that also folds. Naming `paragraph` here would be asserting
+ * the fix instead of the requirement.
+ *
+ * @param {any} panel
+ * @param {number} width
+ * @param {string} glyphs
+ * @returns {string}
+ */
+const drawn = (panel, width, glyphs) => render([normalize(panel)], { width, glyphs })
+
+test('a blind spot is folded and not clipped, so no frame can take the reason off the end of it', async () => {
+  const net = network(['dev-a', 'dev-b'])
+  await settle(net, ['dev-a', 'dev-b'])
+
+  // Both wirings, because they are different sets of rows: without the port
+  // `limits()` keeps `refusals` and `zone deaths`, with it the fleet row arrives.
+  // And the floor off, which is the branch that produces the 526-character row.
+  for (const override of [{}, { diagnostics: journal(QUIET, 2) }]) {
+    const device = net.device('dev-a', override, { beatFloor: 0 })
+
+    // Driven to the state where the member line is at its longest, which takes two
+    // beats with a peer's log moving between them: a beat to record what this instance
+    // can see, a peer writing a census that reports a roster this device does not fold,
+    // and a second beat to give `age` something to be measured against. Without that
+    // the line is 63 characters and fits the frame, and a case that never renders the
+    // long form of a line cannot notice the day it starts clipping again.
+    await device.beat()
+    net.push('dev-b', { type: 'beat', reach: 1, roster: 3, faults: [] })
+    await device.beat()
+
+    const rows = device.limits().map((/** @type {any} */ x) => `${x.subject} (${x.observed}): ${x.because}`)
+
+    // The measurement the whole case rests on, asserted rather than remembered: a row
+    // wider than any frame a device renders at cannot be made to fit by choosing a
+    // width, which is why clipping it was a ceiling and not a setting.
+    const longest = Math.max(...rows.map((r) => r.length))
+    assert.ok(longest > 80,
+      `the longest row is ${longest} characters, which fits the 80 an adapter passes — this case is measuring nothing`)
+
+    for (const [width, glyphs] of [[80, 'ascii'], [80, 'unicode'], [40, 'ascii'], [20, 'ascii']]) {
+      const out = drawn(await device.view(), Number(width), String(glyphs))
+
+      // The rows are *there*, whole, at every one of these widths. `fold` breaks
+      // between words, so the newlines it inserted are collapsed before looking —
+      // which is the one thing `artifact-ui` says a caller searching rendered output
+      // has to tolerate, and the reason a case like this has to be written on purpose
+      // rather than fallen into.
+      const flat = out.replace(/\s+/g, ' ')
+      for (const row of rows) {
+        assert.ok(flat.includes(row),
+          `at width ${width} (${glyphs}) the panel does not contain this row whole: ${JSON.stringify(row)}`)
+      }
+
+      // And nothing else on the panel was clipped either, because one ellipsis
+      // anywhere is content the renderer threw away — the journal note and the member
+      // line are prose too and each of them clipped here before. From 40 up rather
+      // than at every width, and the exemption is named rather than dodged: below
+      // about 25 the *fields* clip, `members reached: 2 of 2` first. That is a
+      // different question and not this ceiling. A field is a short value behind a
+      // label, the label is the identity of the line, and moving one out of `field`
+      // would restructure the block rather than change a node's name. 20 is also the
+      // renderer's own floor for a frame with an inside at all, not a width any
+      // adapter passes.
+      if (Number(width) >= 40) {
+        assert.equal(/…/.test(out), false,
+          `something on the panel was clipped at width ${width} (${glyphs}):\n${out}`)
+      }
+    }
+  }
+})
+
 /* ────────── the kernel's own journal, through platform:diagnostics ─────────── */
 
 /**
@@ -1456,7 +1553,12 @@ test('the panel shows the counts, and qualifies them in the same block', async (
   // warning rather than a muted aside for the same reason the blind spots are. It also
   // has to say the new thing, because `fetch: 0` on this panel is the number most likely
   // to be read as good news.
-  const note = all.find((n) => n.type === 'text' && /network is still several things/.test(String(n.text)))
+  // Found by what it says and not by which node carries it. This used to name `text`,
+  // and that pinned the panel to the node type that clipped the sentence: the day the
+  // note became a `paragraph` so it could be read at all, this case went red for a
+  // reason that had nothing to do with what it asserts. Which node folds is the fold
+  // case's business, further up this file.
+  const note = all.find((n) => /network is still several things/.test(String(n.text)))
   if (note === undefined) assert.fail('the panel shows a network count with nothing saying what it is not')
   assert.equal(note.tone, 'warning', 'the qualification is the part a reader must not skim')
   assert.ok(/every network it has joined/.test(note.text), 'and it discloses the scope')
