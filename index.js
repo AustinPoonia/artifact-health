@@ -297,14 +297,15 @@
  * different bound, it is the removal of the bound.
  *
  * So the clock and the content are separated. The census stays integers and codes and
- * carries no clock, and the *suppression* expires instead: `settings.beatFloor`, five
- * minutes by default. A device with nothing new to say writes one beat per floor
- * rather than one per tick or none ever, which is a bound in entries per member per
- * day, and it makes a member's silence mean something an operator can act on. The
- * cost is real and is stated rather than absorbed — a quiet fleet's feed now grows on
- * time as well as on change — and a network that cannot pay it sets the floor to zero
- * and gets the old behaviour back, with `limits()` on that device saying what it gave
- * up.
+ * carries no clock, and the *suppression* expires instead: `settings.beatFloor`, one
+ * minute by default — well under the five-minute lifetime of the resident session the
+ * reading is taken inside, for the reason argued at `FLOOR`. A device with nothing new
+ * to say writes one beat per floor rather than one per tick or none ever, which is a
+ * bound in entries per member per day, and it makes a member's silence mean something
+ * an operator can act on. The cost is real and is stated rather than absorbed — a quiet
+ * fleet's feed now grows on time as well as on change — and a network that cannot pay
+ * it sets the floor to zero and gets the old behaviour back, with `limits()` on that
+ * device saying what it gave up.
  *
  * The reading built on it never compares two devices' clocks. `entry.at` is the
  * writer's own and `platform:feed` says never to trust it; `age` is this device's
@@ -456,11 +457,48 @@ function since (ms) {
 /**
  * How long an unchanged census suppresses a beat when a network says nothing.
  *
- * Five minutes, and the number is borrowed rather than invented: it is
- * `lib/resident.js`'s `REFOLD_INTERVAL`, the clock a resident device already re-reads
- * its logs on. See `settings.beatFloor` for what the floor is for.
+ * **One minute, and the constraint on it is a relationship rather than a taste.** The
+ * floor has to sit well *below* the lifetime of the process that reads this feed, or
+ * the currency reading it exists to make possible does not work. `lib/resident.js`'s
+ * `MAX_AGE` ends a resident session every five minutes and the per-member counters
+ * `age` is computed from are per-instance, so they reset with it. A floor equal to that
+ * lifetime lets a healthy member's log move **at most once per session** — and one
+ * observation is not a rate. Both readings then start at `null`, climb together, and a
+ * device with a flawless thirty-second timer becomes indistinguishable from a device
+ * beating not at all.
+ *
+ * That is not hypothetical and it is not an inference from the code. This number was
+ * `300000` through 1.3.0 — *the same number as `MAX_AGE`, arrived at by borrowing
+ * `lib/resident.js`'s clock without asking which of its two clocks mattered here* — and
+ * a two-host fleet measured on 2026-08-21 produced identical `age` readings (10s, 46s,
+ * 2m, 3m) for a member timing perfectly and a member stopped dead. `age` is the only
+ * field that can tell those apart: `reached`, `silent` and `degraded` are monotone once
+ * true, and `at` is the writer's own clock, which this artifact refuses to do
+ * arithmetic on. So at the shipped default the one act this reading exists for was not
+ * performed. At a floor of `15000` the same fleet separated them — a stopped member's
+ * `age` grew 1m → 3m while a live one stayed under 20s.
+ *
+ * A minute puts roughly five observations inside a session, which is enough to
+ * distinguish a climbing `age` from a resetting one without any per-instance config.
+ *
+ * **What it costs, stated rather than implied.** One feed entry per device per minute
+ * instead of one per five, on a fleet with nothing to say — five times the floor's
+ * contribution to log growth. Suppression is still content-addressed, so this is a
+ * *ceiling* and not a rate an idle fleet actually pays: a device whose census is
+ * changing was already writing, and the floor adds entries only where nothing is
+ * changing. It is not free, and the number that makes it expensive is fleet size. A
+ * network large enough for it to matter raises `beatFloor` per instance — that override
+ * works, is measured working, and `limits()` on such a device reports what the larger
+ * floor gives up.
+ *
+ * **Do not raise this back toward `MAX_AGE`.** The two being equal is what broke it,
+ * and lowering `MAX_AGE` instead was considered and rejected: it is argued in
+ * `lib/resident.js`'s own header as a deliberate security bound — the ceiling on how
+ * long a revoked device keeps serving — and it is not a monitoring knob.
+ *
+ * See `settings.beatFloor` for what the floor is for.
  */
-const FLOOR = 300000
+const FLOOR = 60000
 
 /**
  * The floor a config asked for, or the default, with anything unusable treated as the
@@ -1679,7 +1717,7 @@ module.exports = {
        * Write one beat, and say plainly which of the three things happened.
        *
        * The suppressed case is not a failure and must not read as one. A device that
-       * beat five minutes ago with the same census has nothing to add, and a person who
+       * beat inside the floor with the same census has nothing to add, and a person who
        * typed this twice should be told that rather than left wondering whether it
        * worked — so it is `muted` and it says why, and the refused case is `danger`.
        *

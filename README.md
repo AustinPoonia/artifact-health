@@ -81,9 +81,15 @@ healthy member writes nothing, so a healthy member and one this device stopped
 replicating with produce identical feeds and no reading can separate them. Putting a
 clock *in* the census would move it and would also remove the suppression, one entry per
 member per tick forever. So the census is unchanged and the suppression expires:
-`beatFloor`, five minutes by default, past which an unchanged census is written again on
-purpose. Set it to zero for the old behaviour, and `limits()` on that device will say
-currency is unanswerable there.
+`beatFloor`, one minute by default, past which an unchanged census is written again on
+purpose. A minute and not five because the resident session this is read inside ends
+every five (`lib/resident.js`'s `MAX_AGE`) and the counters `age` is computed from
+reset with it: a floor equal to that lifetime moves a healthy log at most once per
+session, and a measured two-host fleet gave a stopped device and a perfectly timed one
+identical ages. The cost is one entry per device per minute rather than per five where
+nothing is changing; a fleet large enough to feel that raises `beatFloor` per instance.
+Set it to zero for the old behaviour, and `limits()` on that device will say currency is
+unanswerable there.
 
 ## The two things worth reading the source for
 

@@ -623,8 +623,71 @@ test('a config that did not say gets the default floor rather than getting it sw
     assert.strictEqual((await a.beat()).wrote, true, 'the first census is written')
     await passes(5)
     assert.strictEqual((await a.beat()).wrote, false,
-      `beatFloor ${JSON.stringify(config)} did not default; five milliseconds is not five minutes`)
+      `beatFloor ${JSON.stringify(config)} did not default; five milliseconds is shorter than any floor this ships`)
   }
+})
+
+test('the default floor leaves room for several observations inside one resident session', async () => {
+  // **The property, and deliberately not the literal.** `age` is computed from
+  // per-instance counters that reset when the resident session restarts, and
+  // `lib/resident.js`'s `MAX_AGE` restarts it every five minutes. So what the default
+  // floor has to satisfy is a *relationship*: a healthy member's log must move several
+  // times inside one session, because one move per session is not a rate and nothing
+  // can be read off it.
+  //
+  // 1.3.0 shipped with the floor and `MAX_AGE` at the same 300000 — one move per
+  // session — and a measured two-host fleet gave a device with a flawless
+  // thirty-second timer and a device beating not at all identical `age` readings. That
+  // is the whole reason this artifact writes an unchanged census at all, so it gets a
+  // case rather than a comment.
+  //
+  // Asserted through `beat()` rather than by reading the constant: the constant is not
+  // exported, and what a monitor is judged on is what it writes.
+  const SESSION = 5 * 60 * 1000 // lib/resident.js `MAX_AGE`, the session this is read inside
+  const MOVES = 4 // observations that must fit in one, before `age` can separate two members
+
+  /**
+   * A device whose last beat reads as `elapsed` old, without waiting `elapsed`.
+   *
+   * The store record is the only clock `beat()` compares against — both sides of the
+   * comparison are this device's own, which is the property that makes the floor sound
+   * — so ageing what the store hands back is the whole fixture. The digest is left
+   * exactly as written, so the census is still genuinely unchanged.
+   *
+   * @param {number} elapsed
+   */
+  function aged (elapsed) {
+    /** @type {Map<string, string>} */
+    const kv = new Map()
+    return network(['dev-a']).device('dev-a', {
+      store: {
+        get: async (/** @type {string} */ k) => {
+          if (!kv.has(k)) return null
+          const v = String(kv.get(k))
+          const cut = v.indexOf('|')
+          return cut < 0 ? v : `${Date.now() - elapsed}|${v.slice(cut + 1)}`
+        },
+        put: async (/** @type {string} */ k, /** @type {string} */ v) => { kv.set(k, v); return true },
+        delete: async (/** @type {string} */ k) => kv.delete(k),
+        keys: async () => [...kv.keys()].sort()
+      }
+    })
+  }
+
+  const apart = SESSION / MOVES
+  const stale = aged(apart)
+  assert.strictEqual((await stale.beat()).wrote, true, 'the first census is written')
+  assert.strictEqual((await stale.beat()).wrote, true,
+    `the default floor still suppresses an unchanged census ${apart}ms old, so a healthy log moves fewer than ` +
+    `${MOVES} times per ${SESSION}ms resident session and age cannot separate a stopped member from a quiet one`)
+
+  // And it is still a floor. The reading was not bought by turning suppression off:
+  // an unchanged census a second later is still suppressed, which is what bounds the
+  // feed of a fleet with nothing to say.
+  const recent = aged(1000)
+  assert.strictEqual((await recent.beat()).wrote, true, 'the first census is written')
+  assert.strictEqual((await recent.beat()).wrote, false,
+    'an unchanged census one second old was written again; the floor has stopped bounding an idle fleet')
 })
 
 test('a store written by a release that kept no clock beats once, and is in the new shape after', async () => {
